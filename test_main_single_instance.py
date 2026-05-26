@@ -27,13 +27,19 @@ class SingleInstanceTests(unittest.TestCase):
             main.configure_tcl_tk()
 
             self.assertEqual(
-                r"C:\tools\VM Sync\_internal\tcl\tcl8.6",
+                r"C:\tools\VM Sync\_internal\_tcl_data",
                 os.environ["TCL_LIBRARY"],
             )
             self.assertEqual(
-                r"C:\tools\VM Sync\_internal\tcl\tk8.6",
+                r"C:\tools\VM Sync\_internal\_tk_data",
                 os.environ["TK_LIBRARY"],
             )
+
+    def test_pyinstaller_spec_bundles_tcl_tk_data_for_runtime_hook(self):
+        spec = (Path(__file__).parent / "VM Sync.spec").read_text(encoding="utf-8")
+
+        self.assertIn('"_tcl_data"', spec)
+        self.assertIn('"_tk_data"', spec)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,10 @@ if (-not (Test-Path $Exe)) {
 
 Copy-Item -LiteralPath (Join-Path $Root "README.md") -Destination (Join-Path $Root "dist\VM Sync\README.md") -Force
 Copy-Item -LiteralPath (Join-Path $Root "config.example.json") -Destination (Join-Path $Root "dist\VM Sync\config.example.json") -Force
+$RuntimeConfig = Join-Path $Root "dist\VM Sync\config.json"
+if (Test-Path $RuntimeConfig) {
+    Remove-Item -LiteralPath $RuntimeConfig -Force
+}
 
 Write-Host ""
 Write-Host "Build complete:"

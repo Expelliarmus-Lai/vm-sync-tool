@@ -24,9 +24,8 @@ def configure_tcl_tk():
     if not getattr(sys, "frozen", False):
         return
     bundle_dir = Path(getattr(sys, "_MEIPASS", app_base_dir()))
-    tcl_root = bundle_dir / "tcl"
-    os.environ.setdefault("TCL_LIBRARY", str(tcl_root / "tcl8.6"))
-    os.environ.setdefault("TK_LIBRARY", str(tcl_root / "tk8.6"))
+    os.environ.setdefault("TCL_LIBRARY", str(bundle_dir / "_tcl_data"))
+    os.environ.setdefault("TK_LIBRARY", str(bundle_dir / "_tk_data"))
 
 
 TOOL_DIR = app_base_dir()
