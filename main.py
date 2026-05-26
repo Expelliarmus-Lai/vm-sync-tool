@@ -12,7 +12,24 @@ import os
 import socket
 from pathlib import Path
 
-TOOL_DIR = Path(__file__).parent.resolve()
+def app_base_dir() -> Path:
+    """Return project dir in source mode, exe dir in PyInstaller mode."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent.resolve()
+    return Path(__file__).parent.resolve()
+
+
+def configure_tcl_tk():
+    """Point tkinter at bundled Tcl/Tk when running from PyInstaller."""
+    if not getattr(sys, "frozen", False):
+        return
+    bundle_dir = Path(getattr(sys, "_MEIPASS", app_base_dir()))
+    tcl_root = bundle_dir / "tcl"
+    os.environ.setdefault("TCL_LIBRARY", str(tcl_root / "tcl8.6"))
+    os.environ.setdefault("TK_LIBRARY", str(tcl_root / "tk8.6"))
+
+
+TOOL_DIR = app_base_dir()
 os.chdir(str(TOOL_DIR))
 
 _LOCK_PORT = 19998
@@ -42,6 +59,7 @@ def notify_existing_instance() -> bool:
 
 
 def main():
+    configure_tcl_tk()
     if not check_single_instance():
         if not notify_existing_instance():
             import tkinter.messagebox as mb
