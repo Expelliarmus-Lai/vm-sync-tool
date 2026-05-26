@@ -23,6 +23,10 @@ The intended workflow is:
 - After sync starts, the first `.bin` poll records the current VM `.bin` as a startup baseline and does not copy it back immediately.
 - `.bin` is copied back only when content hash changes. If the timestamp changes but content is identical, the app logs a skipped update once for that file state.
 - The UI currently starts at `760x860`, has minimum size `680x720`, and has no maximum-size cap.
+- The source repository has bilingual project documentation: Chinese `README.md` and English `README.en.md`.
+- The release user guide is also bilingual: `docs/USER_GUIDE.md` and `docs/USER_GUIDE.en.md`.
+- `build_release.ps1` builds a folder-based exe release and copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewriting language links for the release package.
+- Local runtime config, release output, build output, caches, and probe logs are intentionally ignored by git.
 - Known open issue: window dragging can still feel less responsive than a normal native window on some machines. Do not pause timers, log updates, or polling while dragging, because that makes the app feel frozen.
 
 ## Stack
@@ -33,19 +37,109 @@ The intended workflow is:
 - **VM communication:** `subprocess.run(...)` calling `vmrun.exe`
 - **Full sync packaging:** Python `zipfile`, then guest PowerShell `Expand-Archive`
 
-## File Map
+## Repository Layout
 
-| File | Purpose |
+This file is meant for local AI/development agents, so it documents both tracked repository files and local ignored files. Ignored files may still be important for debugging a user's machine, but they must not be committed.
+
+Full local workspace layout:
+
+```text
+vm-sync-tool/
+  .gitignore                                      tracked
+  AGENTS.md                                      tracked, local AI/maintainer context
+  README.md                                      tracked, Chinese GitHub/developer README
+  README.en.md                                   tracked, English GitHub/developer README
+  docs/
+    USER_GUIDE.md                                tracked, Chinese release user guide source
+    USER_GUIDE.en.md                             tracked, English release user guide source
+  main.py                                        tracked, app entry point
+  ui.py                                          tracked, CustomTkinter UI and tray behavior
+  syncer.py                                      tracked, sync engine and vmrun operations
+  config_manager.py                              tracked, config model and persistence
+  preflight.py                                   tracked, path/VM/bin validation
+  vmrun_resolver.py                              tracked, vmrun and running VM detection
+  tools/
+    vmrun_probe.py                               tracked, local vmrun diagnostic helper
+  tests/                                         tracked, unit/regression tests
+  packaging_hooks/
+    pre_find_module_path/
+      hook-tkinter.py                            tracked, PyInstaller Tcl/Tk hook
+      __pycache__/                               ignored, local Python cache
+  requirements.txt                               tracked, runtime dependencies
+  requirements-dev.txt                           tracked, development/build dependencies
+  config.example.json                            tracked, safe public config template
+  config.json                                    ignored, real local config with paths/credentials
+  dev_start.cmd                                  tracked, source-mode local launcher
+  build_release.ps1                              tracked, release build script
+  VM Sync.spec                                   tracked, PyInstaller spec
+  build/                                         ignored, PyInstaller intermediate output
+  dist/
+    VM Sync/                                     ignored, generated folder-based release
+      VM Sync.exe                                ignored, generated executable
+      _internal/                                 ignored, bundled runtime/dependencies
+      README.md                                  ignored, generated Chinese user guide
+      README.en.md                               ignored, generated English user guide
+      config.example.json                        ignored, copied public config template
+  vmrun_probe_result.txt                         ignored, local probe output if generated
+  __vm_sync_probe_*.txt                          ignored, temporary probe output if generated
+  task_plan.md / findings.md / progress.md       ignored, optional local planning notes
+```
+
+Tracked files that belong in the source repository:
+
+| Path | Purpose |
 |------|---------|
+| `.gitignore` | Excludes local config, build output, caches, probe output, and editor/OS noise |
+| `AGENTS.md` | AI/maintainer context, project rules, architecture notes, and verification commands |
+| `README.md` | Chinese GitHub/developer-facing project overview |
+| `README.en.md` | English GitHub/developer-facing project overview |
+| `docs/USER_GUIDE.md` | Chinese end-user guide copied to release `README.md` |
+| `docs/USER_GUIDE.en.md` | English end-user guide copied to release `README.en.md` |
 | `main.py` | Entry point, single-instance lock on `127.0.0.1:19998`, config load, vmrun/VMX auto-discovery |
 | `ui.py` | CustomTkinter UI: `App`, panels, `AutoScrollFrame`, log coloring, status bar, tray icon/menu |
 | `syncer.py` | `SyncManager`: watchdog observer, debouncer, vmrun calls, full sync, `.bin` polling/return |
 | `config_manager.py` | `ConfigManager` and `Config`: load/save `config.json`, normalize paths/defaults |
 | `preflight.py` | Path, VM, vmrun, running-VM, Keil project, and `.bin` configuration checks |
 | `vmrun_resolver.py` | `vmrun.exe` candidate resolution, `vmrun list`, VMX path normalization |
-| `config.json` | User configuration persisted by the app |
 | `tools/vmrun_probe.py` | One-shot diagnostic script for testing `vmrun` connectivity |
-| `tests/test_*.py` | Unit/regression tests for config, preflight, vmrun resolver, sync logic, UI behavior |
+| `tests/` | Unit/regression tests for config, preflight, vmrun resolver, sync logic, and UI behavior |
+| `packaging_hooks/pre_find_module_path/hook-tkinter.py` | PyInstaller pre-find hook for Tcl/Tk packaging compatibility |
+| `requirements.txt` | Runtime dependencies |
+| `requirements-dev.txt` | Development and release packaging dependencies |
+| `config.example.json` | Safe public config template |
+| `dev_start.cmd` | One-click source-mode launcher for local Windows development |
+| `build_release.ps1` | Folder-based exe release build script |
+| `VM Sync.spec` | PyInstaller build configuration; explicitly unignored in `.gitignore` |
+
+Current test files:
+
+```text
+tests/
+  __init__.py
+  test_config_manager.py
+  test_main_single_instance.py
+  test_preflight.py
+  test_syncer.py
+  test_ui_bin_hint.py
+  test_ui_full_sync.py
+  test_ui_log.py
+  test_ui_start_async.py
+  test_ui_status_async.py
+  test_ui_tray.py
+  test_vmrun_resolver.py
+```
+
+Local/generated files that should remain untracked:
+
+| Path | Purpose |
+|------|---------|
+| `config.json` | Local user configuration persisted by the app; may contain real paths, username, and password. Local AI may inspect it for debugging, but must not commit or expose secrets. |
+| `dist/` | Release output generated by `build_release.ps1`; use it to test the packaged app locally, but regenerate instead of editing contents by hand. |
+| `build/` | PyInstaller intermediate build output; disposable and regenerated by packaging. |
+| `__pycache__/` and `*.pyc` | Python bytecode caches |
+| `packaging_hooks/pre_find_module_path/__pycache__/` | Local hook bytecode cache |
+| `vmrun_probe_result.txt` and `__vm_sync_probe_*.txt` | Local diagnostic/probe output |
+| `task_plan.md`, `findings.md`, `progress.md` | Optional local planning/session notes from planning workflows |
 
 ## Config Keys
 
@@ -96,6 +190,32 @@ Keil build in VM
   -> vmrun CopyFileFromGuestToHost only when content changes after startup
   -> host output directory
 ```
+
+## Documentation and Release Packaging
+
+- Root docs are for GitHub and developers:
+  - `README.md` is the default Chinese overview.
+  - `README.en.md` is the English counterpart.
+  - Both files should contain language links near the top.
+- End-user docs live under `docs/`:
+  - `docs/USER_GUIDE.md` is Chinese.
+  - `docs/USER_GUIDE.en.md` is English.
+  - These files should focus on using the release package, configuration fields, first-use flow, sync overwrite rules, and FAQ.
+- Release package layout after `build_release.ps1`:
+
+```text
+dist\VM Sync\
+  VM Sync.exe
+  _internal\
+  README.md
+  README.en.md
+  config.example.json
+```
+
+- `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md` and `docs/USER_GUIDE.en.md` to release `README.en.md`.
+- The build script rewrites guide language links from `USER_GUIDE*.md` to `README*.md` so links work inside the release package.
+- Do not commit `dist/`, `build/`, `config.json`, `__pycache__/`, or `vmrun_probe_result.txt`.
+- `config.example.json` stays tracked because it is safe to share and documents the public config shape.
 
 ## Full Sync Behavior
 
@@ -192,7 +312,14 @@ Run these after code changes:
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py
+python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_vmrun_resolver.py
+```
+
+Run these after documentation or packaging-script changes:
+
+```powershell
+git diff --check
+powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 ```
 
 ## Naming Conventions
