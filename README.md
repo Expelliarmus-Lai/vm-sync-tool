@@ -71,8 +71,8 @@ vm-sync-tool/
   config_manager.py               config.json 读写和路径规范化
   preflight.py                    保存/启动/同步前的路径和 VM 预检
   vmrun_resolver.py               vmrun.exe 自动探测和运行中 VM 列表解析
-  vmrun_probe.py                  手动诊断 vmrun 连接问题的辅助脚本
-  test_*.py                       单元和回归测试
+  tools/vmrun_probe.py            手动诊断 vmrun 连接问题的辅助脚本
+  tests/test_*.py                 单元和回归测试
   requirements.txt                源码运行依赖
   requirements-dev.txt            打包开发依赖
   dev_start.cmd                   源码开发一键启动脚本
@@ -112,7 +112,7 @@ python main.py
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py test_syncer.py test_ui_full_sync.py test_ui_tray.py test_main_single_instance.py
+python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py tests/test_ui_tray.py tests/test_main_single_instance.py
 ```
 
 ## 打包发布版 exe
@@ -152,7 +152,7 @@ VM Sync/
 建议提交：
 
 - `*.py`
-- `test_*.py`
+- `tests/test_*.py`
 - `README.md`
 - `docs/USER_GUIDE.md`
 - `requirements.txt`
@@ -162,6 +162,7 @@ VM Sync/
 - `build_release.ps1`
 - `VM Sync.spec`
 - `packaging_hooks/`
+- `tools/`
 
 不要提交：
 

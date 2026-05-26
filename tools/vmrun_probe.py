@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-ROOT = Path(__file__).parent.resolve()
+ROOT = Path(__file__).resolve().parents[1]
 LOG = ROOT / "vmrun_probe_result.txt"
 GUEST_CMD = r"C:\Windows\System32\cmd.exe"
 GUEST_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"

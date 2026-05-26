@@ -44,7 +44,8 @@ The intended workflow is:
 | `preflight.py` | Path, VM, vmrun, running-VM, Keil project, and `.bin` configuration checks |
 | `vmrun_resolver.py` | `vmrun.exe` candidate resolution, `vmrun list`, VMX path normalization |
 | `config.json` | User configuration persisted by the app |
-| `test_*.py` | Unit/regression tests for config, preflight, vmrun resolver, sync logic, UI behavior |
+| `tools/vmrun_probe.py` | One-shot diagnostic script for testing `vmrun` connectivity |
+| `tests/test_*.py` | Unit/regression tests for config, preflight, vmrun resolver, sync logic, UI behavior |
 
 ## Config Keys
 
@@ -191,7 +192,7 @@ Run these after code changes:
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py test_syncer.py test_ui_full_sync.py
+python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py
 ```
 
 ## Naming Conventions

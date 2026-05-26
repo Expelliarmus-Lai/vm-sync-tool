@@ -36,7 +36,9 @@ class SingleInstanceTests(unittest.TestCase):
             )
 
     def test_pyinstaller_spec_bundles_tcl_tk_data_for_runtime_hook(self):
-        spec = (Path(__file__).parent / "VM Sync.spec").read_text(encoding="utf-8")
+        spec = (
+            Path(__file__).resolve().parents[1] / "VM Sync.spec"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('"_tcl_data"', spec)
         self.assertIn('"_tk_data"', spec)
