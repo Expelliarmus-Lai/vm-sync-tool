@@ -20,6 +20,7 @@ The intended workflow is:
 - Full sync does not fall back to slow per-file copy. If zip upload/extract fails, it reports the error and stops.
 - VM-to-host `.bin` return is implemented and has been confirmed to transfer a file from the running VM.
 - `.bin` polling defaults to 1 second. Old configs with `poll_interval_sec = 3` are upgraded to `1`.
+- After sync starts, the first `.bin` poll records the current VM `.bin` as a startup baseline and does not copy it back immediately.
 - `.bin` is copied back only when content hash changes. If the timestamp changes but content is identical, the app logs a skipped update once for that file state.
 - The UI currently starts at `760x860`, has minimum size `680x720`, and has no maximum-size cap.
 - Known open issue: window dragging can still feel less responsive than a normal native window on some machines. Do not pause timers, log updates, or polling while dragging, because that makes the app feel frozen.
@@ -88,9 +89,10 @@ Full sync button
   -> delete guest zip
 
 Keil build in VM
+  -> service starts quickly and the first poll records existing VM .bin as a baseline
   -> app polls configured VM .bin every 1 second
   -> read LastWriteTimeUtc ticks, length, SHA256
-  -> vmrun CopyFileFromGuestToHost only when content changed
+  -> vmrun CopyFileFromGuestToHost only when content changes after startup
   -> host output directory
 ```
 
@@ -123,6 +125,8 @@ Keil build in VM
 - If it points to a directory with multiple `.bin` files, save/check and start are blocked and the log asks the user to fill the exact file name.
 - The app must not default to project-specific names such as `RL6492_Project.bin`.
 - The guest file state is `(LastWriteTimeUtc.Ticks, Length, SHA256)`.
+- On the first poll after service start, an existing VM `.bin` becomes the baseline and is ignored until it changes after startup.
+- If guest file state cannot be read while establishing the startup baseline, the app copies the existing VM `.bin` to a host temp file only to calculate a signature; it still does not overwrite `host_output_path`.
 - If stdout from guest PowerShell is unreliable, the app uses one guest temp sidecar file from `CreateTempfileInGuest`, copies it back, parses it, and deletes it when sync stops/quits.
 - Guest state sidecar files must not be created in the project `Output` directory.
 
@@ -178,6 +182,7 @@ UI notes:
 - Font family: `Microsoft YaHei UI` for normal UI and `Microsoft YaHei` for log/monospace-style text.
 - Do not use network sync. The tool is designed around VMware Tools / `vmrun.exe`.
 - Keep UI responsive. Avoid blocking vmrun calls on the Tk main thread.
+- Do not block `SyncManager.start()` on startup `.bin` hashing/copying; baseline work belongs in the poller after the service reports running.
 - Do not reintroduce "pause timer/log/polling while dragging" as a drag-lag workaround.
 
 ## Verification Commands

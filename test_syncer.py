@@ -290,6 +290,93 @@ class SyncManagerTests(unittest.TestCase):
             self.assertEqual(2, len(copies))
             self.assertEqual(b"firmware-b", (Path(out) / "firmware.bin").read_bytes())
 
+    def test_start_ignores_existing_bin_until_guest_bin_content_changes(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+
+            copies = []
+
+            def fake_run(cmd, **_kwargs):
+                if "fileExistsInGuest" in cmd:
+                    return Completed(stdout="The file exists.", returncode=0)
+                if "CopyFileFromGuestToHost" in cmd:
+                    copies.append(cmd)
+                    Path(cmd[-1]).write_bytes(b"firmware-new")
+                    return Completed(returncode=0)
+                return Completed(returncode=0)
+
+            states = [
+                (638838144000000000, 12, "a" * 64),
+                (638838144000000000, 12, "a" * 64),
+                (638838144000100000, 12, "b" * 64),
+            ]
+            with patch(
+                "syncer.PreflightChecker.check",
+                return_value=PreflightReport(),
+            ), patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(manager, "_get_guest_file_state", side_effect=states), \
+                    patch.object(manager, "_start_observer"), \
+                    patch.object(manager, "_start_poller"):
+                self.assertTrue(manager.start())
+                manager._check_bin()
+                self.assertFalse((Path(out) / "firmware.bin").exists())
+                self.assertEqual(0, len(copies))
+
+                manager._check_bin()
+                self.assertFalse((Path(out) / "firmware.bin").exists())
+                self.assertEqual(0, len(copies))
+
+                manager._check_bin()
+
+            self.assertEqual(1, len(copies))
+            self.assertEqual(b"firmware-new", (Path(out) / "firmware.bin").read_bytes())
+
+    def test_start_uses_temp_signature_baseline_when_guest_state_is_unavailable(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+
+            payloads = [b"firmware-old", b"firmware-old", b"firmware-new"]
+
+            def fake_run(cmd, **_kwargs):
+                if "fileExistsInGuest" in cmd:
+                    return Completed(stdout="The file exists.", returncode=0)
+                if "CopyFileFromGuestToHost" in cmd:
+                    Path(cmd[-1]).write_bytes(payloads.pop(0))
+                    return Completed(returncode=0)
+                return Completed(returncode=0)
+
+            with patch(
+                "syncer.PreflightChecker.check",
+                return_value=PreflightReport(),
+            ), patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(manager, "_get_guest_file_state", return_value=None), \
+                    patch.object(manager, "_start_observer"), \
+                    patch.object(manager, "_start_poller"):
+                self.assertTrue(manager.start())
+                manager._check_bin()
+                self.assertFalse((Path(out) / "firmware.bin").exists())
+
+                manager._check_bin()
+                self.assertFalse((Path(out) / "firmware.bin").exists())
+
+                manager._check_bin()
+
+            self.assertEqual(b"firmware-new", (Path(out) / "firmware.bin").read_bytes())
+
     def test_check_bin_logs_when_guest_state_changes_but_content_is_unchanged(self):
         manager, cm = self._manager()
         with tempfile.TemporaryDirectory() as out:
@@ -603,6 +690,41 @@ class SyncManagerTests(unittest.TestCase):
 
         self.assertFalse(started)
         self.assertFalse(manager.running)
+
+    def test_start_does_not_prime_bin_baseline_before_reporting_running(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+
+            def fake_run(cmd, **_kwargs):
+                if "fileExistsInGuest" in cmd:
+                    return Completed(stdout="The file exists.", returncode=0)
+                return Completed(returncode=0)
+
+            with patch(
+                "syncer.PreflightChecker.check",
+                return_value=PreflightReport(),
+            ), patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(
+                        manager,
+                        "_get_guest_file_state",
+                        side_effect=AssertionError("baseline should be lazy"),
+                    ), patch.object(
+                        manager,
+                        "_read_guest_bin_signature",
+                        side_effect=AssertionError("baseline should be lazy"),
+                    ), patch.object(manager, "_start_observer"), \
+                    patch.object(manager, "_start_poller"):
+                started = manager.start()
+
+        self.assertTrue(started)
+        self.assertTrue(manager.running)
 
     def test_start_rejects_ambiguous_bin_directory_before_running(self):
         manager, cm = self._manager()

@@ -115,6 +115,10 @@ class SyncManager:
         self._last_bin_signature: tuple[int, str] | None = None
         self._last_bin_state: tuple | None = None
         self._last_bin_unchanged_log_state: tuple | None = None
+        self._startup_bin_state: tuple | None = None
+        self._startup_bin_content_key: tuple[str, str] | None = None
+        self._startup_bin_signature: tuple[str, int, str] | None = None
+        self._startup_bin_baseline_pending = False
         self._cached_bin_target_key: tuple[str, str, str, str] | None = None
         self._cached_bin_target: tuple[str, str] | None = None
         self._guest_state_output_mode: str | None = None
@@ -144,6 +148,8 @@ class SyncManager:
         if not self._can_start():
             return False
         self._clear_bin_target_cache()
+        self._reset_bin_tracking()
+        self._defer_startup_bin_baseline()
         self._running = True
         self._start_observer()
         self._start_poller()
@@ -175,6 +181,48 @@ class SyncManager:
         if not self._can_resolve_bin_target_for_start():
             return False
         return True
+
+    def _reset_bin_tracking(self):
+        self._last_bin_mtime = 0
+        self._last_bin_signature = None
+        self._last_bin_state = None
+        self._last_bin_unchanged_log_state = None
+        self._startup_bin_state = None
+        self._startup_bin_content_key = None
+        self._startup_bin_signature = None
+        self._startup_bin_baseline_pending = False
+        self._bin_ready = False
+
+    def _defer_startup_bin_baseline(self):
+        cfg = self.config.config
+        self._startup_bin_baseline_pending = bool(
+            cfg.vmrun_path
+            and cfg.vmx_path
+            and cfg.vm_project_path
+            and cfg.vm_bin_relative_path
+        )
+
+    def _record_startup_bin_state(
+        self,
+        vm_bin: str,
+        bin_filename: str,
+        guest_state: tuple[int, int, str],
+    ):
+        state_key = (vm_bin.lower(), *guest_state)
+        self._startup_bin_state = state_key
+        self._startup_bin_content_key = self._bin_state_content_key(state_key)
+        self._startup_bin_baseline_pending = False
+        self._emit("info", "i", f"已记录当前 .bin 状态，后续更新才会回传: {bin_filename}")
+
+    def _record_startup_bin_signature(
+        self,
+        vm_bin: str,
+        bin_filename: str,
+        signature: tuple[int, str],
+    ):
+        self._startup_bin_signature = (vm_bin.lower(), *signature)
+        self._startup_bin_baseline_pending = False
+        self._emit("info", "i", f"已记录当前 .bin 内容，后续变化才会回传: {bin_filename}")
 
     def _vmrun(self) -> str:
         return self.config.config.vmrun_path
@@ -286,6 +334,8 @@ class SyncManager:
         vmx = self.config.config.vmx_path
         resolved = self._resolve_vm_bin_cached()
         if not resolved:
+            if self._startup_bin_baseline_pending:
+                self._startup_bin_baseline_pending = False
             self._bin_ready = False
             return
         vm_bin, bin_filename = resolved
@@ -296,7 +346,31 @@ class SyncManager:
         )
         guest_state = self._get_guest_file_state(vm_bin, vmx)
         if guest_state is not None:
+            if self._startup_bin_baseline_pending:
+                self._record_startup_bin_state(vm_bin, bin_filename, guest_state)
+                self._bin_ready = False
+                return
             state_key = (vm_bin.lower(), *guest_state)
+            if state_key == self._startup_bin_state:
+                self._bin_ready = False
+                return
+            content_key = self._bin_state_content_key(state_key)
+            if (
+                content_key
+                and self._startup_bin_content_key
+                and content_key == self._startup_bin_content_key
+            ):
+                self._startup_bin_state = state_key
+                self._log_bin_content_unchanged_once(state_key, bin_filename)
+                self._bin_ready = False
+                return
+            if (
+                content_key
+                and self._startup_bin_content_key
+                and content_key != self._startup_bin_content_key
+            ):
+                self._startup_bin_state = None
+                self._startup_bin_content_key = None
             if state_key == self._last_bin_state and host_out.exists():
                 self._bin_ready = True
                 return
@@ -306,6 +380,16 @@ class SyncManager:
                 self._bin_ready = True
                 return
         else:
+            if self._startup_bin_baseline_pending:
+                signature = self._read_guest_bin_signature(vm_bin, vmx)
+                if signature is not None:
+                    self._record_startup_bin_signature(
+                        vm_bin,
+                        bin_filename,
+                        signature,
+                    )
+                self._bin_ready = False
+                return
             state_key = None
 
         Path(self.config.config.host_output_path).mkdir(parents=True, exist_ok=True)
@@ -327,6 +411,17 @@ class SyncManager:
         if result.returncode == 0:
             data = tmp_path.read_bytes()
             signature = (len(data), hashlib.sha256(data).hexdigest())
+            startup_signature = (vm_bin.lower(), *signature)
+            if startup_signature == self._startup_bin_signature:
+                tmp_path.unlink(missing_ok=True)
+                self._bin_ready = False
+                return
+            if (
+                self._startup_bin_signature
+                and startup_signature[0] == self._startup_bin_signature[0]
+                and startup_signature != self._startup_bin_signature
+            ):
+                self._startup_bin_signature = None
             if signature == self._last_bin_signature and host_out.exists():
                 tmp_path.unlink(missing_ok=True)
                 unchanged_log_key = state_key
@@ -354,6 +449,34 @@ class SyncManager:
             tmp_path.unlink(missing_ok=True)
             err = self._vmrun_error(result)
             self._emit("error", "✗", f"拉取 .bin 失败: {err}")
+
+    def _bin_state_content_key(self, state_key: tuple) -> tuple[str, str] | None:
+        if len(state_key) < 4:
+            return None
+        return state_key[0], state_key[-1]
+
+    def _read_guest_bin_signature(self, vm_path: str, vmx: str) -> tuple[int, str] | None:
+        tmp = tempfile.NamedTemporaryFile(
+            prefix=".vm_sync_startup_bin_", suffix=".tmp", delete=False,
+        )
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        try:
+            result = self._run_vmrun(
+                [
+                    "CopyFileFromGuestToHost",
+                    vmx, vm_path, str(tmp_path),
+                ],
+                timeout=30,
+            )
+            if result.returncode != 0:
+                return None
+            data = tmp_path.read_bytes()
+            return len(data), hashlib.sha256(data).hexdigest()
+        except Exception:
+            return None
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def _guest_bin_content_is_unchanged(self, state_key: tuple, host_out: Path) -> bool:
         if not host_out.exists() or not self._last_bin_state:
