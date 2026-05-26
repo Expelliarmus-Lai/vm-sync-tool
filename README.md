@@ -1,141 +1,39 @@
 # VM Sync Tool
 
-VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Workstation 虚拟机之间同步 Keil 固件工程。它通过 VMware 的 `vmrun.exe` 和 VMware Tools 操作虚拟机文件，不依赖网络共享或虚拟机网卡。
+VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Workstation 虚拟机之间同步 Keil 固件工程。工具通过 VMware `vmrun.exe` 和 VMware Tools 操作虚拟机文件，不依赖共享文件夹、网络盘或虚拟机网卡。
 
-典型工作流：
+典型流程：
 
 1. 在宿主机编辑 Keil 工程源码。
 2. 将工程同步到虚拟机。
-3. 在虚拟机里用 Keil 编译。
+3. 在虚拟机里用 Keil 手动编译。
 4. 将生成的 `.bin` 固件回传到宿主机。
 
-## 给谁看
-
-这个根目录 `README.md` 是给 GitHub 访客和后续维护开发者看的。它说明项目是什么、源码结构是什么、如何从源码运行和打包。
-
-普通使用者拿到文件夹版发布包后，应阅读发布包里的 `README.md`。发布包 README 由 [docs/USER_GUIDE.md](docs/USER_GUIDE.md) 生成，内容更偏向“如何配置和使用软件”。
-
-## 发布包和源码仓库的区别
-
-| 内容 | 用途 | 是否适合上传 GitHub 源码仓库 |
-|---|---|---|
-| 源码仓库根目录 | 开发、维护、开源、重新打包 | 是 |
-| `dist\VM Sync` | 发给同事直接双击使用 | 不建议作为源码提交 |
-| `config.json` | 本机真实配置，含路径/账号/密码 | 否 |
-| `config.example.json` | 可公开的配置格式模板 | 是 |
-
-如果你希望别人能修改这个软件源码，应该上传整个源码仓库，而不是只上传 `dist\VM Sync`。只上传 `dist\VM Sync` 更像发布一个可执行软件，别人通常无法正常修改源码。
-
-如果要公开给外部人员使用或二次开发，建议后续补充 `LICENSE` 文件，明确开源授权方式。
-
-## 主要功能
+## 功能特性
 
 - 自动探测并保存 `vmrun.exe` 路径。
-- 检查配置的 VMX 是否为当前正在运行的虚拟机。
-- 宿主机工程文件改动后，自动增量同步到虚拟机。
-- 支持“全量同步”：把整个宿主机工程打包为 zip，上传到虚拟机后解压覆盖。
-- 自动监听虚拟机里的 `.bin` 输出文件，内容变化后回传到宿主机。
-- 启动同步时不会立即回传虚拟机里已有的旧 `.bin`，只会在启动后检测到新变化时回传。
-- `.bin` 内容没有变化时不会覆盖宿主机输出文件。
-- 支持系统托盘，关闭窗口后可继续后台运行。
-- 退出程序时会停止同步线程并清理临时状态文件。
+- 校验配置的 `.vmx` 是否为 `vmrun list` 当前正在运行的虚拟机。
+- 通过 zip 上传和 VM 内解压执行全量工程同步。
+- 监听宿主机工程文件变化，并将匹配扩展名的文件增量同步到 VM。
+- 监听配置的 VM `.bin` 输出文件，仅在内容变化时回传到宿主机。
+- 启动同步时记录 VM 内已有 `.bin` 作为基线，避免旧固件立即覆盖宿主机文件。
+- 支持系统托盘运行，窗口隐藏后同步服务可继续工作。
+- 退出程序时停止同步线程并清理临时 VM 状态文件。
 
-## 使用前提
-
-运行软件的电脑需要已经准备好：
+## 运行要求
 
 - Windows。
 - VMware Workstation。
-- 目标虚拟机已经安装 VMware Tools。
-- 虚拟机能正常启动并进入 Windows 桌面。
-- 虚拟机里已经安装并可使用 Keil MDK。
-- 虚拟机 Windows 账户有密码，并且可被 `vmrun -gu/-gp` 登录。
+- 目标虚拟机已安装 VMware Tools。
+- 目标 Windows 虚拟机可正常启动并进入桌面。
+- 虚拟机内已安装并可使用 Keil MDK。
+- 虚拟机 Windows 账户设置了密码，并可通过 `vmrun -gu/-gp` 登录。
 
-本工具不会安装 VMware、VMware Tools、Keil，也不会创建虚拟机。
+本工具不会安装 VMware Workstation、VMware Tools、Keil，也不会创建虚拟机。
 
-## 同步和覆盖规则
+## 使用入口
 
-- **全量同步**：把宿主机工程目录下的全部文件打包上传到 VM 工程路径并解压。VM 里同相对路径的文件会被宿主机文件覆盖，VM 里多出来的文件不会被删除。
-- **启动后的增量同步**：只监听宿主机工程里的新增/修改文件，并按 `watch_extensions` 指定的扩展名同步到 VM。同相对路径的 VM 文件会被覆盖；删除、重命名和不在扩展名列表里的文件不会自动同步。
-- **`.bin` 回传**：只从 VM 拉取配置的 `.bin` 文件到宿主机固件回传目录。启动同步时会先记录 VM 当前 `.bin` 作为基线，不会立刻覆盖宿主机旧文件；启动后 `.bin` 内容变化才会回传并覆盖宿主机同名文件。
-
-## 源码目录说明
-
-```text
-vm-sync-tool/
-  README.md                       GitHub 首页和开发维护说明
-  docs/USER_GUIDE.md              普通使用者说明，构建时复制到发布包
-  main.py                         程序入口，单实例检查，配置加载
-  ui.py                           CustomTkinter 界面、日志、托盘
-  syncer.py                       同步核心、vmrun 调用、全量同步、.bin 回传
-  config_manager.py               config.json 读写和路径规范化
-  preflight.py                    保存/启动/同步前的路径和 VM 预检
-  vmrun_resolver.py               vmrun.exe 自动探测和运行中 VM 列表解析
-  tools/vmrun_probe.py            手动诊断 vmrun 连接问题的辅助脚本
-  tests/test_*.py                 单元和回归测试
-  requirements.txt                源码运行依赖
-  requirements-dev.txt            打包开发依赖
-  dev_start.cmd                   源码开发一键启动脚本
-  build_release.ps1               构建文件夹版 exe 的脚本
-  VM Sync.spec                    PyInstaller 打包配置
-  config.example.json             可公开提交的配置模板
-  config.json                     本机真实配置，已被 .gitignore 排除
-  dist/                           构建产物，已被 .gitignore 排除
-  build/                          构建缓存，已被 .gitignore 排除
-```
-
-## 从源码运行
-
-第一次拿到源码后，安装运行依赖：
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-之后可以直接双击源码根目录下的：
-
-```text
-dev_start.cmd
-```
-
-也可以手动运行：
-
-```powershell
-python main.py
-```
-
-源码运行时读取的是源码根目录下的 `config.json`。exe 发布包运行时读取的是 exe 同目录下的 `config.json`。这两个位置不同，方便开发测试和发布包测试互不干扰。
-
-## 运行测试
-
-修改代码后建议运行：
-
-```powershell
-python -m unittest discover -v
-python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py tests/test_ui_tray.py tests/test_main_single_instance.py
-```
-
-## 打包发布版 exe
-
-第一次打包前安装开发依赖：
-
-```powershell
-python -m pip install -r requirements-dev.txt
-```
-
-构建文件夹版 exe：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build_release.ps1
-```
-
-构建完成后，发布包目录为：
-
-```text
-dist\VM Sync\
-```
-
-发布包目录应包含：
+普通使用者应下载项目发布页中的文件夹版发行包。发行包结构如下：
 
 ```text
 VM Sync/
@@ -145,32 +43,106 @@ VM Sync/
   config.example.json
 ```
 
-其中 `dist\VM Sync\README.md` 来自 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)，是给普通使用者看的说明。不要只发单独的 `VM Sync.exe`，文件夹版 exe 需要旁边的 `_internal` 目录。
+直接运行 `VM Sync.exe` 即可。发行包内的 `README.md` 由 [docs/USER_GUIDE.md](docs/USER_GUIDE.md) 生成，包含配置项说明、首次使用流程、同步覆盖规则和常见问题。
 
-## GitHub 上传建议
+开发者请使用源码仓库，并参考下方的 [开发](#开发)、[诊断](#诊断)、[测试](#测试) 和 [打包](#打包) 章节。
 
-建议提交：
+## 同步行为
 
-- `*.py`
-- `tests/test_*.py`
-- `README.md`
-- `docs/USER_GUIDE.md`
-- `requirements.txt`
-- `requirements-dev.txt`
-- `config.example.json`
-- `dev_start.cmd`
-- `build_release.ps1`
-- `VM Sync.spec`
-- `packaging_hooks/`
-- `tools/`
+- **全量同步**：上传宿主机工程根目录下的全部文件，并解压到 VM 工程路径。VM 中相同相对路径的文件会被覆盖；VM 中额外存在的文件不会被删除。
+- **增量同步**：同步服务启动后，监听宿主机新增或修改的文件，仅处理 `watch_extensions` 中配置的扩展名。VM 中相同相对路径的文件会被覆盖；删除、重命名和不在扩展名列表内的文件不会自动同步。
+- **`.bin` 回传**：只拉取配置的 VM `.bin` 目标。同步服务启动时会先记录 VM 当前 `.bin` 作为基线，不会立即回传；后续内容变化才会覆盖宿主机固件回传目录中的同名文件。仅时间戳变化且内容相同的文件会被跳过。
 
-不要提交：
+更详细的用户操作说明见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)。
 
-- `config.json`
-- `dist/`
-- `build/`
-- `__pycache__/`
-- `vmrun_probe_result.txt`
-- 任何包含本机路径、VM 账号或密码的调试文件
+## 源码目录
 
-这些本机文件已经在 `.gitignore` 中排除。发布给普通使用者时，可以把 `dist\VM Sync` 压缩后作为 GitHub Release 附件上传。
+```text
+vm-sync-tool/
+  README.md                       项目说明和开发指南
+  AGENTS.md                       维护约定和编码注意事项
+  docs/USER_GUIDE.md              使用者说明，构建时复制到发行包
+  main.py                         程序入口和单实例处理
+  ui.py                           CustomTkinter 界面、日志、状态栏、托盘
+  syncer.py                       同步引擎、vmrun 调用、全量同步、.bin 回传
+  config_manager.py               配置读写和路径规范化
+  preflight.py                    路径、VM、Keil 工程和 .bin 预检
+  vmrun_resolver.py               vmrun 探测和运行中 VM 解析
+  tools/vmrun_probe.py            vmrun 连接诊断脚本
+  tests/                          单元测试和回归测试
+  packaging_hooks/                PyInstaller hook 调整
+  requirements.txt                运行依赖
+  requirements-dev.txt            开发和打包依赖
+  config.example.json             安全的配置模板
+  dev_start.cmd                   源码模式开发启动脚本
+  build_release.ps1               文件夹版 exe 构建脚本
+  VM Sync.spec                    PyInstaller 构建配置
+```
+
+## 开发
+
+安装运行依赖：
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+从源码启动：
+
+```powershell
+python main.py
+```
+
+Windows 本地开发时也可以双击 `dev_start.cmd`。该脚本会从源码启动程序，并在启动失败时保留控制台错误信息。
+
+源码模式的运行配置保存在仓库工作目录的 `config.json`。发行包模式的运行配置保存在 `VM Sync.exe` 同目录下。
+
+## 诊断
+
+完成一次软件配置后，可使用诊断脚本检查 `vmrun`、VM 凭据和文件往返能力：
+
+```powershell
+python tools\vmrun_probe.py
+```
+
+诊断日志输出到 `vmrun_probe_result.txt`，该文件不会进入版本控制。
+
+## 测试
+
+运行回归测试：
+
+```powershell
+python -m unittest discover -v
+```
+
+编译检查主要模块和高风险测试：
+
+```powershell
+python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py tests/test_ui_tray.py tests/test_main_single_instance.py
+```
+
+## 打包
+
+安装打包依赖：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
+构建文件夹版 Windows exe：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_release.ps1
+```
+
+构建产物生成在：
+
+```text
+dist\VM Sync\
+```
+
+发布时应分发整个 `VM Sync` 文件夹，不能只分发单独的 `VM Sync.exe`，因为 exe 依赖旁边的 `_internal` 目录。
+
+## 仓库维护
+
+本地运行配置和构建产物已通过 `.gitignore` 排除，包括 `config.json`、`dist/`、`build/`、`__pycache__/` 和 `vmrun_probe_result.txt`。`config.example.json` 是保留在仓库中的安全配置模板。

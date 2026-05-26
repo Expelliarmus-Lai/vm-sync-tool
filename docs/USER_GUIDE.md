@@ -15,9 +15,9 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Works
 
 本工具不会安装 VMware、VMware Tools、Keil，也不会创建虚拟机。
 
-## 发布包里有什么
+## 发布包内容
 
-你拿到的文件夹应该长这样：
+发布包目录应包含：
 
 ```text
 VM Sync/
@@ -29,7 +29,7 @@ VM Sync/
 
 双击 `VM Sync.exe` 即可启动。普通使用者不需要安装 Python，也不需要运行 bat/cmd/vbs。
 
-第一次运行时，程序会在 `VM Sync.exe` 同目录生成 `config.json`。这个文件保存本机路径、虚拟机路径、VM 用户名和密码，不要上传到 GitHub，也不要发给别人。
+第一次运行时，程序会在 `VM Sync.exe` 同目录生成 `config.json`。这个文件保存本机路径、虚拟机路径、VM 用户名和密码，请勿公开分享。
 
 `config.example.json` 是公开模板，用来展示配置文件格式；程序真正读取和保存的是 `config.json`。
 
@@ -42,7 +42,7 @@ VM Sync/
 | VMX 路径 | 虚拟机 `.vmx` 文件路径。必须是当前正在运行的虚拟机。 | `D:\VMs\Win10\Windows 10.vmx` |
 | VM 用户名 | 虚拟机 Windows 登录用户名，用于 `vmrun` 操作文件。 | `h` |
 | VM 密码 | 虚拟机 Windows 登录密码。建议不要使用空密码。 | `123456` |
-| 宿主机工程路径 | 你在宿主机上编辑的 Keil 工程根目录。 | `C:\Users\Administrator\Desktop\project` |
+| 宿主机工程路径 | 宿主机上编辑的 Keil 工程根目录。 | `C:\Users\Administrator\Desktop\project` |
 | VM 工程路径 | 虚拟机里的工程根目录。全量同步会解压到这里，增量同步也会写到这里。 | `C:\Users\h\Desktop\project` |
 | `.bin` 相对路径 | 相对于 VM 工程路径的 `.bin` 文件或目录。 | `Output\RL6492\firmware.bin` |
 | 固件回传目录 | `.bin` 回传到宿主机的目录。 | `C:\Users\Administrator\Desktop\bin` |
@@ -121,6 +121,6 @@ Output\RL6492\firmware.bin
 
 关闭窗口只会隐藏到系统托盘，同步仍然运行。需要完全退出时，请右键托盘图标，选择“退出”。
 
-## 给维护开发者
+## 源码和二次开发
 
-如果你想修改软件源码，请不要只使用这个发布包。请获取完整源码仓库，源码仓库根目录会有面向开发者的 `README.md`，里面包含源码运行、测试和重新打包说明。
+需要修改软件源码或重新打包时，请使用完整源码仓库。源码仓库根目录的 `README.md` 包含开发启动、测试、诊断和打包说明。
