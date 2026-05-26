@@ -1,5 +1,7 @@
 # VM Sync Tool
 
+语言：[中文](README.md) | [English](README.en.md)
+
 VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Workstation 虚拟机之间同步 Keil 固件工程。工具通过 VMware `vmrun.exe` 和 VMware Tools 操作虚拟机文件，不依赖共享文件夹、网络盘或虚拟机网卡。
 
 典型流程：
@@ -43,7 +45,7 @@ VM Sync/
   config.example.json
 ```
 
-直接运行 `VM Sync.exe` 即可。发行包内的 `README.md` 由 [docs/USER_GUIDE.md](docs/USER_GUIDE.md) 生成，包含配置项说明、首次使用流程、同步覆盖规则和常见问题。
+直接运行 `VM Sync.exe` 即可。发行包内的 `README.md` 由 [docs/USER_GUIDE.md](docs/USER_GUIDE.md) 生成，`README.en.md` 由 [docs/USER_GUIDE.en.md](docs/USER_GUIDE.en.md) 生成，包含配置项说明、首次使用流程、同步覆盖规则和常见问题。
 
 开发者请使用源码仓库，并参考下方的 [开发](#开发)、[诊断](#诊断)、[测试](#测试) 和 [打包](#打包) 章节。
 
@@ -60,8 +62,10 @@ VM Sync/
 ```text
 vm-sync-tool/
   README.md                       项目说明和开发指南
+  README.en.md                    英文项目说明和开发指南
   AGENTS.md                       维护约定和编码注意事项
   docs/USER_GUIDE.md              使用者说明，构建时复制到发行包
+  docs/USER_GUIDE.en.md           英文使用者说明，构建时复制到发行包
   main.py                         程序入口和单实例处理
   ui.py                           CustomTkinter 界面、日志、状态栏、托盘
   syncer.py                       同步引擎、vmrun 调用、全量同步、.bin 回传

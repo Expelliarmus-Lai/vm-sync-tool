@@ -1,0 +1,152 @@
+# VM Sync Tool
+
+Language: [中文](README.md) | [English](README.en.md)
+
+VM Sync Tool is a Windows desktop utility for synchronizing a Keil firmware project between a host machine and a VMware Workstation virtual machine. It operates VM files through VMware `vmrun.exe` and VMware Tools, so it does not rely on shared folders, network drives, or a VM network adapter.
+
+Typical workflow:
+
+1. Edit the Keil project source code on the host machine.
+2. Sync the project into the virtual machine.
+3. Build manually with Keil inside the virtual machine.
+4. Pull the generated `.bin` firmware back to the host machine.
+
+## Features
+
+- Automatically detects and saves the `vmrun.exe` path.
+- Verifies that the configured `.vmx` is the VM currently running in `vmrun list`.
+- Performs full project sync by uploading a zip archive and extracting it inside the VM.
+- Watches host project file changes and incrementally syncs matching file extensions into the VM.
+- Watches the configured VM `.bin` output and pulls it back to the host only when the file content changes.
+- Records the existing VM `.bin` as a startup baseline, preventing old firmware from immediately overwriting the host output.
+- Supports system tray operation, so the sync service can continue after the window is hidden.
+- Stops sync threads and cleans temporary VM state files when the application exits.
+
+## Requirements
+
+- Windows.
+- VMware Workstation.
+- VMware Tools installed in the target VM.
+- A target Windows VM that can boot normally and reach the desktop.
+- Keil MDK installed and usable inside the VM.
+- A Windows account inside the VM with a password, accessible through `vmrun -gu/-gp`.
+
+This tool does not install VMware Workstation, VMware Tools, or Keil, and it does not create virtual machines.
+
+## Usage Entry Points
+
+Regular users should download the folder-based release package from the project's release page. The release package should look like this:
+
+```text
+VM Sync/
+  VM Sync.exe
+  _internal/
+  README.md
+  config.example.json
+```
+
+Run `VM Sync.exe` directly. The `README.md` included in the release package is generated from [docs/USER_GUIDE.md](docs/USER_GUIDE.md), and `README.en.md` is generated from [docs/USER_GUIDE.en.md](docs/USER_GUIDE.en.md). They contain configuration descriptions, first-use steps, sync overwrite rules, and common troubleshooting notes.
+
+Developers should use the source repository and refer to the sections below: [Development](#development), [Diagnostics](#diagnostics), [Testing](#testing), and [Packaging](#packaging).
+
+## Sync Behavior
+
+- **Full sync**: Uploads every file under the host project root and extracts them into the VM project path. VM files with the same relative paths are overwritten; extra files that already exist in the VM are not deleted.
+- **Incremental sync**: After the sync service starts, newly created or modified host files are watched and only extensions configured in `watch_extensions` are processed. VM files with the same relative paths are overwritten; deletes, renames, and files outside the extension list are not automatically synced.
+- **`.bin` return**: Pulls back only the configured VM `.bin` target. When the sync service starts, the current VM `.bin` is recorded as a baseline and is not copied back immediately. Later content changes overwrite the same-named file in the host firmware output directory. Files whose timestamp changes but content stays the same are skipped.
+
+For detailed user instructions, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
+## Source Layout
+
+```text
+vm-sync-tool/
+  README.md                       Chinese project overview and developer guide
+  README.en.md                    English project overview and developer guide
+  AGENTS.md                       Maintenance conventions and coding notes
+  docs/USER_GUIDE.md              User guide copied into the release package during build
+  docs/USER_GUIDE.en.md           English user guide copied into the release package during build
+  main.py                         Application entry point and single-instance handling
+  ui.py                           CustomTkinter UI, logs, status bar, and tray menu
+  syncer.py                       Sync engine, vmrun calls, full sync, and .bin return
+  config_manager.py               Config loading/saving and path normalization
+  preflight.py                    Path, VM, Keil project, and .bin preflight checks
+  vmrun_resolver.py               vmrun detection and running VM parsing
+  tools/vmrun_probe.py            vmrun connection diagnostic script
+  tests/                          Unit and regression tests
+  packaging_hooks/                PyInstaller hook adjustments
+  requirements.txt                Runtime dependencies
+  requirements-dev.txt            Development and packaging dependencies
+  config.example.json             Safe configuration template
+  dev_start.cmd                   Source-mode development launcher
+  build_release.ps1               Folder-based exe build script
+  VM Sync.spec                    PyInstaller build configuration
+```
+
+## Development
+
+Install runtime dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Run from source:
+
+```powershell
+python main.py
+```
+
+For local Windows development, you can also double-click `dev_start.cmd`. It starts the application from source and keeps the console open if startup fails, making errors easier to inspect.
+
+In source mode, runtime configuration is saved as `config.json` in the repository working directory. In release mode, runtime configuration is saved next to `VM Sync.exe`.
+
+## Diagnostics
+
+After completing the application configuration, run the diagnostic script to check `vmrun`, VM credentials, and file round-trip capability:
+
+```powershell
+python tools\vmrun_probe.py
+```
+
+The diagnostic log is written to `vmrun_probe_result.txt`. This file is excluded from version control.
+
+## Testing
+
+Run regression tests:
+
+```powershell
+python -m unittest discover -v
+```
+
+Compile-check the main modules and higher-risk tests:
+
+```powershell
+python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py tests/test_ui_tray.py tests/test_main_single_instance.py
+```
+
+## Packaging
+
+Install packaging dependencies:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
+Build the folder-based Windows exe:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_release.ps1
+```
+
+The build output is generated at:
+
+```text
+dist\VM Sync\
+```
+
+Distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, because the executable depends on the adjacent `_internal` directory.
+
+## Repository Maintenance
+
+Local runtime configuration and build outputs are excluded by `.gitignore`, including `config.json`, `dist/`, `build/`, `__pycache__/`, and `vmrun_probe_result.txt`. `config.example.json` is the safe configuration template that remains in the repository.

@@ -1,0 +1,129 @@
+# VM Sync Tool User Guide
+
+Language: [中文](USER_GUIDE.md) | [English](USER_GUIDE.en.md)
+
+VM Sync Tool is a Windows desktop utility for synchronizing a Keil firmware project between a host machine and a VMware Workstation virtual machine. It operates VM files through VMware `vmrun.exe` and VMware Tools, so it does not require network sharing or a VM network adapter.
+
+## Requirements
+
+Before using the tool, make sure the host and VM are ready:
+
+- Windows.
+- VMware Workstation.
+- VMware Tools installed in the target VM.
+- The target VM can boot normally and enter the Windows desktop.
+- Keil MDK is installed and usable inside the VM.
+- The Windows account inside the VM has a password and can be used with `vmrun -gu/-gp`.
+
+This tool does not install VMware, VMware Tools, or Keil, and it does not create virtual machines.
+
+## Release Package Contents
+
+The release package should contain:
+
+```text
+VM Sync/
+  VM Sync.exe
+  _internal/
+  README.md
+  README.en.md
+  config.example.json
+```
+
+Double-click `VM Sync.exe` to start the application. Regular users do not need to install Python or run any bat/cmd/vbs script.
+
+On first run, the application creates `config.json` in the same directory as `VM Sync.exe`. This file stores local paths, VM paths, the VM username, and the VM password. Do not share it publicly.
+
+`config.example.json` is a public template that shows the config file format. The application actually reads from and writes to `config.json`.
+
+## Configuration Fields
+
+After opening the application, fill in the configuration panel and click "保存并检测" (Save and Check).
+
+| Field | Meaning | Example |
+|---|---|---|
+| VMX path | Path to the VM `.vmx` file. It must be the VM that is currently running. | `D:\VMs\Win10\Windows 10.vmx` |
+| VM username | Windows login username inside the VM, used by `vmrun` for file operations. | `h` |
+| VM password | Windows login password inside the VM. Blank passwords are not recommended. | `123456` |
+| Host project path | The Keil project root that you edit on the host. | `C:\Users\Administrator\Desktop\project` |
+| VM project path | The project root inside the VM. Full sync extracts here; incremental sync also writes here. | `C:\Users\h\Desktop\project` |
+| `.bin` relative path | The `.bin` file or directory relative to the VM project path. | `Output\RL6492\firmware.bin` |
+| Firmware return directory | Host directory where returned `.bin` files are written. | `C:\Users\Administrator\Desktop\bin` |
+
+### How to Fill `.bin` Relative Path
+
+The recommended value is the exact `.bin` file:
+
+```text
+Output\RL6492\firmware.bin
+```
+
+You can also fill in the directory that contains the `.bin`:
+
+```text
+Output\RL6492
+```
+
+If the directory contains exactly one `.bin`, the application will auto-detect it. If it contains multiple `.bin` files, the application will report an error and ask you to choose the exact file name.
+
+Do not enter an absolute path inside the VM. This field is relative to the "VM project path".
+
+## Basic Workflow
+
+1. Start VMware Workstation and open the target VM desktop.
+2. Double-click `VM Sync.exe`.
+3. Fill in the configuration fields.
+4. Click "保存并检测" (Save and Check).
+5. When setting up a project for the first time, click "全量同步" (Full Sync) to copy the whole project into the VM.
+6. Click "启动" (Start) to begin watching host file changes and VM `.bin` output.
+7. Build the project manually with Keil inside the VM.
+8. After the `.bin` content changes, the application automatically copies it back to the firmware return directory.
+
+## Full Sync vs Start Sync
+
+### Full Sync
+
+Full sync packages every file under the host project directory, uploads the archive to the VM, and extracts it into the VM project path. Use it when configuring a project for the first time, after large project structure changes, or when files are missing in the VM project directory.
+
+Overwrite rule: VM files with the same relative paths are overwritten by host files. Extra files that already exist in the VM are not deleted. In other words, full sync updates matching files from the host but does not clear the VM directory.
+
+### Start Sync
+
+After start sync is enabled, the application does two things:
+
+- Watches host project file changes and incrementally syncs them into the VM.
+- Polls the VM `.bin` output file and copies it back to the host when the content changes.
+
+Incremental sync only handles files that are created or modified on the host, and only when their extensions are included in `watch_extensions`. VM files with the same relative paths are overwritten. Deletes, renames, and files outside the extension list are not automatically synced.
+
+`.bin` return only targets one configured `.bin` file. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back only when its content changes. If only the timestamp changes and the content is unchanged, the file is not overwritten.
+
+## FAQ
+
+### The application reports that vmrun.exe cannot be found
+
+Make sure VMware Workstation is installed. The application automatically checks common installation paths and `vmrun.exe` in PATH.
+
+### The configured VMX is reported as not running
+
+Start the target VM in VMware Workstation first, and make sure the configured VMX path is the VM that is currently running.
+
+### The VM directory contains multiple `.bin` files
+
+Change the `.bin` relative path from a directory to an exact file name, for example:
+
+```text
+Output\RL6492\firmware.bin
+```
+
+### The `.bin` is not copied back immediately after start
+
+This is expected. See the `.bin` return rules above.
+
+### The application still runs after closing the window
+
+Closing the window only hides the application to the system tray. Sync continues running. To fully exit, right-click the tray icon and choose "退出" (Exit).
+
+## Source Code and Further Development
+
+If you need to modify the source code or rebuild the application, use the full source repository. The root `README.md` and `README.en.md` include development startup, testing, diagnostics, and packaging instructions.

@@ -1,5 +1,7 @@
 # VM Sync Tool 使用说明
 
+语言：[中文](USER_GUIDE.md) | [English](USER_GUIDE.en.md)
+
 VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Workstation 虚拟机之间同步 Keil 固件工程。它通过 VMware 的 `vmrun.exe` 和 VMware Tools 操作虚拟机文件，不依赖网络共享或虚拟机网卡。
 
 ## 使用前提
@@ -24,6 +26,7 @@ VM Sync/
   VM Sync.exe
   _internal/
   README.md
+  README.en.md
   config.example.json
 ```
 
