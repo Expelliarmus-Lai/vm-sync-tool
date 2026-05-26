@@ -7,6 +7,7 @@ import threading
 import queue
 import time
 import os
+import ctypes
 from pathlib import Path
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageTk
@@ -22,6 +23,7 @@ from vmrun_resolver import list_running_vms, normalize_vmx_path, resolve_vmrun_p
 
 FONT_FAMILY = "Microsoft YaHei UI"
 MONO_FAMILY = "Microsoft YaHei"
+APP_USER_MODEL_ID = "vm-sync-tool.vm-sync"
 
 
 def ui_font(size=13, weight="normal"):
@@ -342,32 +344,42 @@ class AutoScrollFrame(ctk.CTkFrame):
         return None
 
 
-# ── Tray Icon Generator ──────────────────────────────────────
+# ── App Icon ──────────────────────────────────────
+
+def app_icon_path() -> str:
+    """Return the CustomTkinter titlebar icon used as the app-wide icon."""
+    return str(
+        Path(ctk.__file__).resolve().parent
+        / "assets"
+        / "icons"
+        / "CustomTkinter_icon_Windows.ico"
+    )
+
 
 def create_app_icon(size: int = 32):
-    """Generate the shared VM Sync app icon for window, taskbar, and tray."""
-    img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # Chip body
-    d.rounded_rectangle([5, 7, 26, 24], radius=3, fill=(0, 212, 255, 220))
-    # Inner dark area
-    d.rounded_rectangle([9, 11, 22, 20], radius=2, fill=(13, 17, 23, 240))
-    # Left pins
-    for y in [9, 13, 17, 21]:
-        d.rectangle([1, y, 5, y + 2], fill=(0, 212, 255, 220))
-    # Right pins
-    for y in [9, 13, 17, 21]:
-        d.rectangle([26, y, 30, y + 2], fill=(0, 212, 255, 220))
-    # Center dot (glowing)
-    d.ellipse([13, 13, 18, 18], fill=(0, 230, 118, 240))
-    if size != 32:
-        return img.resize((size, size), Image.Resampling.LANCZOS)
-    return img
+    """Load the same icon used by the window titlebar for tray/taskbar use."""
+    with Image.open(app_icon_path()) as source:
+        image = source.convert("RGBA")
+    if image.size != (size, size):
+        return image.resize((size, size), Image.Resampling.LANCZOS)
+    return image
 
 
 def create_tray_icon():
     """Return the shared app icon for the system tray."""
     return create_app_icon(32)
+
+
+def set_windows_app_user_model_id():
+    """Let Windows group this pythonw process under the app icon, not Python."""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            APP_USER_MODEL_ID
+        )
+    except Exception:
+        pass
 
 
 def tray_sync_label(running: bool) -> str:
@@ -1074,6 +1086,7 @@ class App:
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("blue")
 
+        set_windows_app_user_model_id()
         self.window = ctk.CTk()
         self.window.title("VM Sync")
         self.window.geometry("760x860")
@@ -1104,11 +1117,15 @@ class App:
         self._poll_events()
 
     def _apply_window_icon(self):
-        self._window_icon_photos = [
-            ImageTk.PhotoImage(create_app_icon(size))
-            for size in (16, 32, 64)
-        ]
-        self.window.iconphoto(True, *self._window_icon_photos)
+        try:
+            self.window.iconbitmap(app_icon_path())
+            self._window_icon_photos = []
+        except Exception:
+            self._window_icon_photos = [
+                ImageTk.PhotoImage(create_app_icon(size))
+                for size in (16, 32, 64)
+            ]
+            self.window.iconphoto(True, *self._window_icon_photos)
 
     # ── Build UI ─────────────────────────────────────────
 

@@ -1,7 +1,8 @@
+import inspect
 import unittest
 from types import SimpleNamespace
 
-from ui import App, create_app_icon, create_tray_icon, tray_status_label, tray_sync_label
+from ui import App, app_icon_path, create_app_icon, create_tray_icon, tray_status_label, tray_sync_label
 
 
 class TrayMenuTests(unittest.TestCase):
@@ -18,8 +19,20 @@ class TrayMenuTests(unittest.TestCase):
     def test_app_applies_window_icon_from_shared_app_icon(self):
         names = App._apply_window_icon.__code__.co_names
 
-        self.assertIn("create_app_icon", names)
-        self.assertIn("iconphoto", names)
+        self.assertIn("app_icon_path", names)
+        self.assertIn("iconbitmap", names)
+
+    def test_app_sets_windows_app_user_model_id_before_creating_window(self):
+        source = inspect.getsource(App.__init__)
+
+        self.assertIn("set_windows_app_user_model_id()", source)
+        self.assertLess(
+            source.index("set_windows_app_user_model_id()"),
+            source.index("ctk.CTk()"),
+        )
+
+    def test_app_icon_path_uses_customtkinter_window_icon_asset(self):
+        self.assertTrue(app_icon_path().endswith("CustomTkinter_icon_Windows.ico"))
 
     def test_tray_sync_label_reflects_running_state(self):
         self.assertEqual("⏸  暂停同步 (运行中)", tray_sync_label(True))
