@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.venv/
+venv/
+env/
+
+build/
+dist/
+*.spec
+
+# Local runtime configuration and machine-specific probe output
+config.json
+vmrun_probe_result.txt
+__vm_sync_probe_*.txt
+__vm_sync_probe_back.txt
+
+# Local planning/session notes
+task_plan.md
+findings.md
+progress.md
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
