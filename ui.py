@@ -9,7 +9,7 @@ import time
 import os
 from pathlib import Path
 from datetime import datetime
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 import pystray
 
 from config_manager import ConfigManager
@@ -344,8 +344,8 @@ class AutoScrollFrame(ctk.CTkFrame):
 
 # ── Tray Icon Generator ──────────────────────────────────────
 
-def create_tray_icon():
-    """Generate a 32x32 chip-circuit icon for the system tray."""
+def create_app_icon(size: int = 32):
+    """Generate the shared VM Sync app icon for window, taskbar, and tray."""
     img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     # Chip body
@@ -360,7 +360,14 @@ def create_tray_icon():
         d.rectangle([26, y, 30, y + 2], fill=(0, 212, 255, 220))
     # Center dot (glowing)
     d.ellipse([13, 13, 18, 18], fill=(0, 230, 118, 240))
+    if size != 32:
+        return img.resize((size, size), Image.Resampling.LANCZOS)
     return img
+
+
+def create_tray_icon():
+    """Return the shared app icon for the system tray."""
+    return create_app_icon(32)
 
 
 def tray_sync_label(running: bool) -> str:
@@ -1071,6 +1078,7 @@ class App:
         self.window.title("VM Sync")
         self.window.geometry("760x860")
         self.window.minsize(680, 720)
+        self._apply_window_icon()
 
         self._current_appearance = ctk.get_appearance_mode()
         self._last_appearance_check_time = 0.0
@@ -1094,6 +1102,13 @@ class App:
 
         self._check_vm_status()
         self._poll_events()
+
+    def _apply_window_icon(self):
+        self._window_icon_photos = [
+            ImageTk.PhotoImage(create_app_icon(size))
+            for size in (16, 32, 64)
+        ]
+        self.window.iconphoto(True, *self._window_icon_photos)
 
     # ── Build UI ─────────────────────────────────────────
 

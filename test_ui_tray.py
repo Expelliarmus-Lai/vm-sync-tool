@@ -1,10 +1,26 @@
 import unittest
 from types import SimpleNamespace
 
-from ui import App, tray_status_label, tray_sync_label
+from ui import App, create_app_icon, create_tray_icon, tray_status_label, tray_sync_label
 
 
 class TrayMenuTests(unittest.TestCase):
+    def test_tray_icon_uses_same_image_as_window_icon(self):
+        app_icon = create_app_icon()
+        tray_icon = create_tray_icon()
+
+        self.assertEqual(app_icon.size, tray_icon.size)
+        self.assertEqual(
+            app_icon.tobytes(),
+            tray_icon.tobytes(),
+        )
+
+    def test_app_applies_window_icon_from_shared_app_icon(self):
+        names = App._apply_window_icon.__code__.co_names
+
+        self.assertIn("create_app_icon", names)
+        self.assertIn("iconphoto", names)
+
     def test_tray_sync_label_reflects_running_state(self):
         self.assertEqual("⏸  暂停同步 (运行中)", tray_sync_label(True))
         self.assertEqual("▶  启动同步 (已停止)", tray_sync_label(False))
