@@ -160,7 +160,7 @@ Local/generated files that should remain untracked:
 | `vm_guest_password` | VM user password for `vmrun -gp`. Blank passwords are blocked because they can trigger VIX crashes/popups. |
 | `host_project_path` | Host-side project root. |
 | `vm_project_path` | VM-side project root. Full sync extracts here and incremental sync writes under this root. |
-| `vm_bin_relative_path` | `.bin` path relative to `vm_project_path`. May be an exact `.bin` file or a directory to scan. Absolute paths are invalid. |
+| `vm_bin_relative_path` | `.bin` path relative to `vm_project_path`. May be an exact `.bin` file or a directory to scan. The UI converts absolute paths under `vm_project_path` into relative paths before saving; absolute paths outside `vm_project_path` remain invalid. |
 | `host_output_path` | Host directory where the returned `.bin` is written. Created on start if missing. |
 | `debounce_ms` | Host file-change debounce, currently `500`. |
 | `poll_interval_sec` | VM `.bin` poll interval, currently `1`. |
@@ -264,6 +264,7 @@ dist\VM Sync\
 ## `.bin` Return Behavior
 
 - `vm_bin_relative_path` is relative to `vm_project_path`.
+- The UI normalizes path entries to Windows backslashes. If the user pastes a VM `.bin`/Output absolute path under `vm_project_path`, save/start converts it to a relative path and writes the converted value back to the entry and `config.json`.
 - If it points to an exact `.bin`, the app uses only that file.
 - If it points to a directory with one `.bin`, the app auto-resolves that one file, logs the selected relative file, fills the config entry with the exact relative `.bin` path, and saves it to `config.json`.
 - If it points to a directory with multiple `.bin` files, save/check and start are blocked and the log asks the user to fill the exact file name.
@@ -291,7 +292,7 @@ General preflight is shared by `保存并检测`, start/pause, and full sync. `�
 - Keil project detection accepts `.uvprojx`, `.uvoptx`, `.uvproj`, `.uvopt`, `.uv2`, and `.opt`.
 - `vm_project_path` must not be a disk root or broad risky system path.
 - `host_output_path` must be a directory if it already exists.
-- `vm_bin_relative_path` is required and must not be absolute.
+- `vm_bin_relative_path` is required and must not remain absolute after UI normalization. Absolute paths inside `vm_project_path` are converted before preflight; absolute paths outside `vm_project_path` are rejected.
 - A `.bin` name that does not match the detected primary Keil project name is a warning, not a blocking error.
 
 ## UI Layout

@@ -66,7 +66,7 @@ Output\RL6492
 
 If the directory contains exactly one `.bin`, the application auto-detects it, logs which file was selected, fills the configuration field with the exact relative `.bin` path, and saves it to `config.json`. If it contains multiple `.bin` files, the application will report an error and ask you to choose the exact file name.
 
-Do not enter an absolute path inside the VM. This field is relative to the "VM project path".
+If you paste a full absolute path that is under the VM project path, the application converts it to a relative path and displays it with Windows backslashes. For example, `C:\Users\h\Desktop\project\Output\RL6492` is saved as `Output\RL6492`. If the absolute path is outside the VM project path, the check fails; correct either the relative `.bin` path or the VM project path.
 
 ## Basic Workflow
 

@@ -8,6 +8,7 @@ import queue
 import time
 import os
 import ctypes
+import ntpath
 from pathlib import Path
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageTk
@@ -650,6 +651,20 @@ class ControlPanel(ctk.CTkFrame):
 # ── Config Panel ─────────────────────────────────────────────
 
 class ConfigPanel(ctk.CTkFrame):
+    _NORMALIZED_PATH_ENTRY_KEYS = {
+        "vmx_path",
+        "host_project_path",
+        "vm_project_path",
+        "vm_bin_relative_path",
+        "host_output_path",
+    }
+    _WINDOWS_ABSOLUTE_PATH_ENTRY_KEYS = {
+        "vmx_path",
+        "host_project_path",
+        "vm_project_path",
+        "host_output_path",
+    }
+
     def __init__(self, master, app: "App"):
         super().__init__(master, fg_color=current_palette()["card"],
                          border_color=current_palette()["border"], border_width=1,
@@ -795,6 +810,9 @@ class ConfigPanel(ctk.CTkFrame):
         val = getattr(self.app.cm.config, key, "")
         if val:
             entry.insert(0, val)
+        if key in self._NORMALIZED_PATH_ENTRY_KEYS:
+            entry.bind("<FocusOut>", lambda _event, k=key: self._normalize_entry_display(k))
+            entry.bind("<Return>", lambda _event, k=key: self._normalize_entry_display(k))
         self._entries[key] = entry
 
         if mode in ("dir", "file"):
@@ -823,22 +841,142 @@ class ConfigPanel(ctk.CTkFrame):
                 filetypes=[("VMware VMX", "*.vmx"), ("All files", "*.*")],
             )
         if path:
-            self._entries[key].delete(0, "end")
-            self._entries[key].insert(0, path)
+            normalized = self._normalize_entry_value(
+                key,
+                path,
+                vm_project_path=self._current_vm_project_path_for_normalization(),
+            )
+            self._replace_entry_value(self._entries[key], normalized)
 
     def _save_values_only(self, emit_log: bool = False):
+        raw_values = {
+            key: entry.get().strip()
+            for key, entry in self._entries.items()
+        }
+        vm_project_path = self._normalize_entry_value(
+            "vm_project_path",
+            raw_values.get(
+                "vm_project_path",
+                getattr(self.app.cm.config, "vm_project_path", ""),
+            ),
+        )
         for key, entry in self._entries.items():
-            setattr(self.app.cm.config, key, entry.get().strip())
+            value = self._normalize_entry_value(
+                key,
+                raw_values.get(key, ""),
+                vm_project_path=vm_project_path,
+            )
+            setattr(self.app.cm.config, key, value)
         self.app.resolve_vmrun_path(save=True)
         self.app.cm.save()
-        if emit_log and hasattr(self.app, "log_panel"):
-            self.app.log_panel.append(
+        self._refresh_entry_values_from_config()
+        log_panel = getattr(self.app, "log_panel", None)
+        if emit_log and log_panel:
+            log_panel.append(
                 LogEvent(
                     LogIcon.CONFIG,
                     f"路径已保存至 config.json 文件: {self.app.cm.config_path}",
                     "success",
                 )
             )
+
+    def _normalize_entry_display(self, key: str):
+        entry = self._entries.get(key)
+        if not entry:
+            return
+        normalized = self._normalize_entry_value(
+            key,
+            entry.get(),
+            vm_project_path=self._current_vm_project_path_for_normalization(),
+        )
+        self._replace_entry_value(entry, normalized)
+
+    def _refresh_entry_values_from_config(self):
+        for key, entry in self._entries.items():
+            value = getattr(self.app.cm.config, key, "")
+            if entry.get() != value:
+                self._replace_entry_value(entry, value)
+
+    def _replace_entry_value(self, entry, value: str):
+        entry.delete(0, "end")
+        if value:
+            entry.insert(0, value)
+
+    def _current_vm_project_path_for_normalization(self) -> str:
+        entry = self._entries.get("vm_project_path")
+        value = entry.get() if entry else getattr(self.app.cm.config, "vm_project_path", "")
+        return self._normalize_entry_value("vm_project_path", value)
+
+    def _normalize_entry_value(
+        self,
+        key: str,
+        value: str,
+        vm_project_path: str | None = None,
+    ) -> str:
+        if key not in self._NORMALIZED_PATH_ENTRY_KEYS:
+            return str(value or "").strip()
+        text = self._clean_path_text(value)
+        if not text:
+            return ""
+        if key == "vm_bin_relative_path":
+            return self._normalize_vm_bin_relative_path(text, vm_project_path)
+        if key in self._WINDOWS_ABSOLUTE_PATH_ENTRY_KEYS:
+            return self._normalize_windows_path(text)
+        return text
+
+    def _normalize_vm_bin_relative_path(
+        self,
+        value: str,
+        vm_project_path: str | None = None,
+    ) -> str:
+        text = value.replace("/", "\\")
+        drive, _tail = ntpath.splitdrive(text)
+        if not drive:
+            text = text.lstrip("\\")
+        text = ntpath.normpath(text)
+        if text == ".":
+            return text
+
+        root = self._normalize_windows_path(
+            vm_project_path or getattr(self.app.cm.config, "vm_project_path", "")
+        )
+        if root and self._is_windows_absolute_path(text):
+            relative = self._relative_path_under_root(text, root)
+            if relative is not None:
+                return relative
+        return text
+
+    def _relative_path_under_root(self, path: str, root: str) -> str | None:
+        normalized_path = self._normalize_windows_path(path)
+        normalized_root = self._normalize_windows_path(root).rstrip("\\")
+        if not normalized_root:
+            return None
+
+        path_key = normalized_path.casefold()
+        root_key = normalized_root.casefold()
+        if path_key == root_key:
+            return "."
+        if not path_key.startswith(root_key + "\\"):
+            return None
+        try:
+            return ntpath.normpath(ntpath.relpath(normalized_path, normalized_root))
+        except ValueError:
+            return None
+
+    def _normalize_windows_path(self, value: str) -> str:
+        text = self._clean_path_text(value)
+        if not text:
+            return ""
+        return ntpath.normpath(text.replace("/", "\\"))
+
+    def _clean_path_text(self, value: str) -> str:
+        text = str(value or "").strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+            text = text[1:-1].strip()
+        return text
+
+    def _is_windows_absolute_path(self, path: str) -> bool:
+        return ntpath.isabs(path)
 
     def update_bin_path_hint(self, check_guest: bool = False):
         p = current_palette()
@@ -886,11 +1024,10 @@ class ConfigPanel(ctk.CTkFrame):
         self.bin_resolved_label.configure(text=text, text_color=text_color)
 
     def _relative_vm_bin_path(self, vm_path: str) -> str:
-        root = self.app.cm.config.vm_project_path.rstrip("\\/")
-        prefix = root + "\\"
-        if vm_path.lower().startswith(prefix.lower()):
-            return vm_path[len(prefix):]
-        return vm_path
+        return self._normalize_vm_bin_relative_path(
+            vm_path,
+            self.app.cm.config.vm_project_path,
+        )
 
     def _autofill_resolved_bin_path(self, vm_path: str):
         rel_path = self._relative_vm_bin_path(vm_path)
@@ -898,18 +1035,24 @@ class ConfigPanel(ctk.CTkFrame):
             return
         entry = getattr(self, "_entries", {}).get("vm_bin_relative_path")
         current = entry.get().strip() if entry else self.app.cm.config.vm_bin_relative_path
-        if current.lower() == rel_path.lower():
+        normalized_current = self._normalize_vm_bin_relative_path(current)
+        if normalized_current.lower() == rel_path.lower():
+            if entry and current != rel_path:
+                self._replace_entry_value(entry, rel_path)
+            if self.app.cm.config.vm_bin_relative_path.lower() != rel_path.lower():
+                self.app.cm.config.vm_bin_relative_path = rel_path
+                self.app.cm.save()
             return
         if entry:
-            entry.delete(0, "end")
-            entry.insert(0, rel_path)
+            self._replace_entry_value(entry, rel_path)
         self.app.cm.config.vm_bin_relative_path = rel_path
         self.app.cm.save()
-        if hasattr(self.app, "log_panel"):
-            self.app.log_panel.append(
+        log_panel = getattr(self.app, "log_panel", None)
+        if log_panel:
+            log_panel.append(
                 LogEvent(
                     LogIcon.BIN,
-                    f"已自动补全 .bin 相对路径并保存至 config.json 文件: {rel_path}",
+                    f"已自动补全 .bin 相对路径: {rel_path}",
                     "success",
                 )
             )
