@@ -16,11 +16,15 @@ The intended workflow is:
 - `vmrun.exe` auto-detection is implemented and persisted in `config.json`.
 - VMX preflight verifies that the configured VMX is the VM currently listed by `vmrun list`.
 - Host-to-VM incremental sync is implemented with watchdog and a 500 ms debounce.
-- Full sync is implemented as zip upload plus guest-side PowerShell extraction.
-- Full sync does not fall back to slow per-file copy. If zip upload/extract fails, it reports the error and stops.
+- Host-to-VM incremental sync copies into a VM-side temp file in the target directory, then moves it over the destination to avoid direct half-writes to the final file.
+- Full sync is implemented as zip upload plus guest-side PowerShell extraction into a VM temp directory, followed by `Copy-Item -Recurse -Force` into the project directory.
+- Full sync does not fall back to slow per-file copy. If zip upload/extract/cover fails, it reports the error, stops, and attempts to clean VM temp files/directories.
+- Full sync has cooperative cancellation. The UI disables config/start, changes the full-sync button to cancel, and cancellation waits for the current `vmrun` operation before cleanup.
 - VM-to-host `.bin` return is implemented and has been confirmed to transfer a file from the running VM.
 - `.bin` polling defaults to 1 second. Old configs with `poll_interval_sec = 3` are upgraded to `1`.
 - After sync starts, the first `.bin` poll records the current VM `.bin` as a startup baseline and does not copy it back immediately.
+- Start from the UI saves the current entry values, runs save/check preflight, then reuses that result only if the saved preflight config snapshot still matches the current config. This avoids repeating slow VM checks before the first baseline poll without allowing stale UI/config values to bypass validation.
+- After the startup baseline is recorded, the first timestamp-only update of that same `.bin` is copied back once even if the content hash is unchanged. This covers users who accidentally compiled before start, then immediately rebuild after start with identical output.
 - Start runs the same save/check flow as `保存并检测` before the sync worker is launched. If preflight or `.bin` target validation fails, sync does not start.
 - Saving from the UI logs that paths have been saved to `config.json`, including the resolved config file path.
 - `.bin` is copied back only when content hash changes. If the timestamp changes but content is identical, the app logs a skipped update once for that file state and sends the same readiness-style host/tray notification.
@@ -177,21 +181,27 @@ Host edit
   -> Start button saves config and runs save/check preflight first
   -> watchdog
   -> debounce(500 ms)
-  -> vmrun CopyFileFromHostToGuest
+  -> vmrun CopyFileFromHostToGuest to a temp file in the VM destination directory
+  -> guest PowerShell Move-Item -Force to the final VM path
   -> VM project directory
 
 Full sync button
   -> save and preflight
   -> zip the full host project
-  -> vmrun CopyFileFromHostToGuest
-  -> run guest PowerShell Expand-Archive -Force
-  -> delete guest zip
+  -> disable config/start and turn the full-sync button into cancel
+  -> vmrun CopyFileFromHostToGuest to a VM temp zip
+  -> run guest PowerShell Expand-Archive -Force into a VM temp directory
+  -> cancellation checkpoints between zip/upload/extract/cover
+  -> run guest PowerShell Copy-Item -Recurse -Force into the VM project path
+  -> delete guest temp zip/temp extract directory
 
 Keil build in VM
   -> service starts quickly and the first poll records existing VM .bin as a baseline
+  -> users should start sync before building in Keil; a build made before start is treated as baseline and is not returned immediately
   -> app polls configured VM .bin every 1 second
   -> read LastWriteTimeUtc ticks, length, SHA256
   -> vmrun CopyFileFromGuestToHost only when content changes after startup
+  -> the first post-baseline timestamp-only update is copied back once even if content is identical
   -> timestamp-only/content-identical changes log once and notify the host/tray
   -> stop requests prevent late poller logs, notifications, and copies
   -> host output directory
@@ -226,13 +236,16 @@ dist\VM Sync\
 ## Full Sync Behavior
 
 - UI button label is `全量同步`.
+- While full sync is running, config inputs and the start button are disabled, and the full-sync button becomes `取消全量同步`.
+- Cancel full sync is cooperative: it sets a cancel flag, disables the cancel button as `取消中...`, waits for the current VM operation to finish, then runs cleanup.
 - Saves current config before checking.
 - Requires the enhanced preflight to pass.
 - Shows progress in the log/progress UI instead of logging every file.
 - Packages all files under `host_project_path`, not only watched source extensions.
-- Extracts into `vm_project_path` with `Expand-Archive -Force`.
-- Matching VM files are overwritten by extracted files.
+- Uploads the zip to a VM temp path, extracts into a VM temp directory, then copies extracted files into `vm_project_path`.
+- Matching VM files are overwritten during the final copy step.
 - Extra files that already exist in the VM destination are not deleted.
+- If cancellation/failure leaves a VM temp path that cannot be cleaned, the log must print the path for manual deletion.
 - No slow compatibility fallback is enabled.
 
 ## Incremental Sync Behavior
@@ -241,6 +254,7 @@ dist\VM Sync\
 - Watches `host_project_path` recursively.
 - Debounces changes by `debounce_ms`.
 - Copies only files whose suffix is in `watch_extensions`.
+- Copies each changed file to a temp file in the target VM directory first, then moves it over the final path with guest PowerShell. If the final move fails, it attempts to delete the temp file and logs any leftover path.
 - Uses the configured `vmrun_path`; there is no hard-coded business-path entry point.
 - All subprocess calls must include `creationflags=subprocess.CREATE_NO_WINDOW` to prevent flashing CMD windows.
 
@@ -248,11 +262,12 @@ dist\VM Sync\
 
 - `vm_bin_relative_path` is relative to `vm_project_path`.
 - If it points to an exact `.bin`, the app uses only that file.
-- If it points to a directory with one `.bin`, the app auto-resolves that one file.
+- If it points to a directory with one `.bin`, the app auto-resolves that one file, logs the selected relative file, fills the config entry with the exact relative `.bin` path, and saves it to `config.json`.
 - If it points to a directory with multiple `.bin` files, save/check and start are blocked and the log asks the user to fill the exact file name.
 - The app must not default to project-specific names such as `RL6492_Project.bin`.
 - The guest file state is `(LastWriteTimeUtc.Ticks, Length, SHA256)`.
 - On the first poll after service start, an existing VM `.bin` becomes the baseline and is ignored until it changes after startup.
+- The baseline log should explain that users should compile after start. The first post-baseline timestamp update with identical content is still returned once, then later identical-content updates are skipped as usual.
 - If guest file state cannot be read while establishing the startup baseline, the app copies the existing VM `.bin` to a host temp file only to calculate a signature; it still does not overwrite `host_output_path`.
 - If the timestamp changes but the content hash is identical, the app logs one skipped overwrite for that file state and shows a host/tray notification.
 - After `stop()` is requested, in-flight `.bin` checks must not emit late skip logs/notifications or copy guest files back to the host.

@@ -14,6 +14,20 @@ class FakeLabel:
         self.kwargs.update(kwargs)
 
 
+class FakeEntry:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def delete(self, *_args):
+        self.value = ""
+
+    def insert(self, _index, value):
+        self.value = value
+
+
 class FakeSync:
     def __init__(self, resolved):
         self.resolved = resolved
@@ -53,6 +67,21 @@ class ConfigPanelBinHintTests(unittest.TestCase):
         self.assertIn("已识别 .bin", text)
         self.assertIn("ActualProject.bin", text)
         self.assertIn(r"C:\Users\h\Desktop\project\Output\RL6492\ActualProject.bin", text)
+
+    def test_directory_bin_path_autofills_entry_and_config_when_unique_bin_resolves(self):
+        panel = self._panel(
+            r"Output\RL6492",
+            (r"C:\Users\h\Desktop\project\Output\RL6492\ActualProject.bin", "ActualProject.bin"),
+        )
+        panel._entries = {"vm_bin_relative_path": FakeEntry(r"Output\RL6492")}
+        saves = []
+        panel.app.cm.save = lambda: saves.append(panel.app.cm.config.vm_bin_relative_path)
+
+        panel.update_bin_path_hint(check_guest=True)
+
+        self.assertEqual(r"Output\RL6492\ActualProject.bin", panel._entries["vm_bin_relative_path"].get())
+        self.assertEqual(r"Output\RL6492\ActualProject.bin", panel.app.cm.config.vm_bin_relative_path)
+        self.assertEqual([r"Output\RL6492\ActualProject.bin"], saves)
 
     def test_directory_bin_path_without_unique_bin_prompts_for_specific_file(self):
         panel = self._panel(r"Output\RL6492", None)

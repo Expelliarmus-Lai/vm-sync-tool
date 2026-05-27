@@ -165,6 +165,12 @@ def _draw_line_icon(name: str, color: str, canvas: int = ICON_CANVAS) -> Image.I
             radius=s(1.2),
             fill=fill,
         )
+    elif name == "stop":
+        draw.rounded_rectangle(
+            (s(6.5), s(6.5), s(17.5), s(17.5)),
+            radius=s(1.8),
+            fill=fill,
+        )
     else:
         circle(12, 12, 6)
 
@@ -417,6 +423,8 @@ class ControlPanel(ctk.CTkFrame):
         self._last_sync_count: int | None = None
         self._last_bin_ready: bool | None = None
         self._last_uptime_text = ""
+        self._full_sync_active = False
+        self._start_preflight_snapshot: tuple | None = None
 
         # Left: two buttons stacked
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -504,7 +512,9 @@ class ControlPanel(ctk.CTkFrame):
     def _start(self):
         report = self.app.config_panel.save_and_check()
         if not report.ok:
+            self._start_preflight_snapshot = None
             return
+        self._start_preflight_snapshot = self.app.sync.preflight_snapshot()
         self.app.config_panel.set_config_enabled(False)
         self.start_btn.configure(state="disabled")
         threading.Thread(target=self._start_worker, daemon=True).start()
@@ -512,7 +522,10 @@ class ControlPanel(ctk.CTkFrame):
     def _start_worker(self):
         error = ""
         try:
-            started = self.app.sync.start()
+            started = self.app.sync.start(
+                preflight_checked=True,
+                preflight_snapshot=self._start_preflight_snapshot,
+            )
         except Exception as e:
             started = False
             error = str(e)
@@ -567,6 +580,20 @@ class ControlPanel(ctk.CTkFrame):
         self._start_time = None
         self.uptime_label.configure(text="运行时间  —")
         self._last_uptime_text = "运行时间  —"
+
+    def set_full_sync_active(self, active: bool):
+        self._full_sync_active = active
+        p = current_palette()
+        if active:
+            self.start_btn.configure(state="disabled", fg_color=p["border"])
+            return
+        if not getattr(self.app.sync, "running", False):
+            self.start_btn.configure(
+                state="normal",
+                fg_color=p["accent"],
+                hover_color=p["accent_hover"],
+                text_color=p["button_text"],
+            )
 
     def update_stats(self, sync_count: int, bin_ready: bool):
         if sync_count != self._last_sync_count:
@@ -630,6 +657,7 @@ class ConfigPanel(ctk.CTkFrame):
         self.app = app
         self._entries = {}
         self._browse_buttons = {}
+        self._full_sync_thread: threading.Thread | None = None
         self._header_icon = icon_image(
             "sliders",
             19,
@@ -647,6 +675,12 @@ class ConfigPanel(ctk.CTkFrame):
             18,
             light_color=LIGHT["warning_text"],
             dark_color=DARK["warning_text"],
+        )
+        self._cancel_icon = icon_image(
+            "stop",
+            18,
+            light_color=LIGHT["button_text"],
+            dark_color=DARK["button_text"],
         )
         self._folder_icon = icon_image(
             "folder",
@@ -832,6 +866,7 @@ class ConfigPanel(ctk.CTkFrame):
             if is_file:
                 text = f"VM .bin 输出文件: {vm_path}"
             else:
+                self._autofill_resolved_bin_path(vm_path)
                 text = (
                     f"已识别 .bin: {self._relative_vm_bin_path(vm_path)}    "
                     f"VM .bin 输出文件: {vm_path}"
@@ -856,6 +891,28 @@ class ConfigPanel(ctk.CTkFrame):
         if vm_path.lower().startswith(prefix.lower()):
             return vm_path[len(prefix):]
         return vm_path
+
+    def _autofill_resolved_bin_path(self, vm_path: str):
+        rel_path = self._relative_vm_bin_path(vm_path)
+        if not rel_path.lower().endswith(".bin"):
+            return
+        entry = getattr(self, "_entries", {}).get("vm_bin_relative_path")
+        current = entry.get().strip() if entry else self.app.cm.config.vm_bin_relative_path
+        if current.lower() == rel_path.lower():
+            return
+        if entry:
+            entry.delete(0, "end")
+            entry.insert(0, rel_path)
+        self.app.cm.config.vm_bin_relative_path = rel_path
+        self.app.cm.save()
+        if hasattr(self.app, "log_panel"):
+            self.app.log_panel.append(
+                LogEvent(
+                    "✓",
+                    f"已自动补全 .bin 相对路径并保存至 config.json 文件: {rel_path}",
+                    "success",
+                )
+            )
 
     def set_config_enabled(self, enabled: bool):
         state = "normal" if enabled else "disabled"
@@ -899,14 +956,52 @@ class ConfigPanel(ctk.CTkFrame):
             self.app.log_panel.append(LogEvent("ℹ", "已取消全量同步", "info"))
             return
         self.set_config_enabled(False)
-        t = threading.Thread(target=self._run_full_sync, daemon=True)
-        t.start()
+        self.app.control.set_full_sync_active(True)
+        self._set_full_sync_button_active(True)
+        self._full_sync_thread = threading.Thread(target=self._run_full_sync)
+        self._full_sync_thread.start()
+
+    def _cancel_full_sync(self):
+        self.app.sync.request_full_sync_cancel()
+        self.fullsync_btn.configure(text="取消中...", state="disabled")
 
     def _run_full_sync(self):
         try:
             self.app.sync.full_sync()
         finally:
-            self.after(0, lambda: self.set_config_enabled(not self.app.sync.running))
+            try:
+                self.after(0, self._finish_full_sync)
+            except tk.TclError:
+                pass
+
+    def _finish_full_sync(self):
+        enabled = not self.app.sync.running
+        self.set_config_enabled(enabled)
+        self._set_full_sync_button_active(False, enabled=enabled)
+        self.app.control.set_full_sync_active(False)
+
+    def _set_full_sync_button_active(self, active: bool, enabled: bool = True):
+        p = current_palette()
+        if active:
+            self.fullsync_btn.configure(
+                text="取消全量同步",
+                image=self._cancel_icon,
+                command=self._cancel_full_sync,
+                state="normal",
+                fg_color=p["error"],
+                hover_color=p["error"],
+                text_color=p["button_text"],
+            )
+            return
+        self.fullsync_btn.configure(
+            text="全量同步",
+            image=self._sync_icon,
+            command=self._full_sync,
+            state="normal" if enabled else "disabled",
+            fg_color=p["warning"],
+            hover_color=p["warning_hover"],
+            text_color=p["warning_text"],
+        )
 
     def load_values(self):
         for key, entry in self._entries.items():
@@ -934,11 +1029,14 @@ class ConfigPanel(ctk.CTkFrame):
                 text_color=p["text"],
             )
         self.update_bin_path_hint()
-        self.fullsync_btn.configure(
-            fg_color=p["warning"],
-            hover_color=p["warning_hover"],
-            text_color=p["warning_text"],
-        )
+        if getattr(self.app.sync, "full_sync_active", False):
+            self._set_full_sync_button_active(True)
+        else:
+            self.fullsync_btn.configure(
+                fg_color=p["warning"],
+                hover_color=p["warning_hover"],
+                text_color=p["warning_text"],
+            )
         self.save_btn.configure(
             fg_color=p["accent"],
             hover_color=p["accent_hover"],
@@ -1362,6 +1460,8 @@ class App:
         if self._shutting_down:
             return
         self._shutting_down = True
+        if getattr(self.sync, "full_sync_active", False):
+            self.sync.request_full_sync_cancel()
         self.sync.stop()
         if self._single_instance_sock:
             try:

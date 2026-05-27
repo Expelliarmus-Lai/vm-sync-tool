@@ -64,7 +64,7 @@ You can also fill in the directory that contains the `.bin`:
 Output\RL6492
 ```
 
-If the directory contains exactly one `.bin`, the application will auto-detect it. If it contains multiple `.bin` files, the application will report an error and ask you to choose the exact file name.
+If the directory contains exactly one `.bin`, the application auto-detects it, logs which file was selected, fills the configuration field with the exact relative `.bin` path, and saves it to `config.json`. If it contains multiple `.bin` files, the application will report an error and ask you to choose the exact file name.
 
 Do not enter an absolute path inside the VM. This field is relative to the "VM project path".
 
@@ -76,7 +76,7 @@ Do not enter an absolute path inside the VM. This field is relative to the "VM p
 4. Click "保存并检测" (Save and Check).
 5. When setting up a project for the first time, click "全量同步" (Full Sync) to copy the whole project into the VM.
 6. Click "启动" (Start). The application first saves the configuration and runs the same checks as "保存并检测" (Save and Check). After the checks pass, it begins watching host file changes and VM `.bin` output.
-7. Build the project manually with Keil inside the VM.
+7. After the log records the current `.bin` state, build the project manually with Keil inside the VM.
 8. After the `.bin` content changes, the application automatically copies it back to the firmware return directory.
 
 ## Full Sync vs Start Sync
@@ -85,7 +85,9 @@ Do not enter an absolute path inside the VM. This field is relative to the "VM p
 
 Full sync packages every file under the host project directory, uploads the archive to the VM, and extracts it into the VM project path. Use it when configuring a project for the first time, after large project structure changes, or when files are missing in the VM project directory.
 
-Overwrite rule: VM files with the same relative paths are overwritten by host files. Extra files that already exist in the VM are not deleted. In other words, full sync updates matching files from the host but does not clear the VM directory.
+During full sync, the configuration panel and Start button are disabled, and the Full Sync button changes to Cancel Full Sync. When cancelled, the application does not force-kill the current VM file operation. It waits for the current step to finish, stops later steps, and cleans the local temporary zip, VM temporary zip, and VM temporary extraction directory. If cleanup fails, the log prints the temporary path that should be removed manually.
+
+Overwrite rule: VM files with the same relative paths are overwritten by host files. Extra files that already exist in the VM are not deleted. Full sync extracts into a VM temporary directory first, then copies from that temporary directory into the VM project path. In other words, full sync updates matching files from the host but does not clear the VM directory.
 
 ### Start Sync
 
@@ -96,9 +98,11 @@ After start sync is enabled, the application does two things:
 
 When you click Start, the application first saves the current configuration, logs that the paths have been saved to `config.json`, and runs the same checks as "Save and Check". If the checks fail, sync does not start; fix the configuration according to the log first.
 
-Incremental sync only handles files that are created or modified on the host, and only when their extensions are included in `watch_extensions`. VM files with the same relative paths are overwritten. Deletes, renames, and files outside the extension list are not automatically synced.
+The intended timing is: sync the project files into the VM, click Start, then build in Keil. Do not build first and then start the application expecting the existing `.bin` to be returned; a `.bin` that already exists before Start is recorded as the baseline and is not copied back immediately. If you compile again after Start, the application will copy the `.bin` back once even when the content is unchanged but the timestamp was updated, so repeated builds right after startup still produce a return event.
 
-`.bin` return only targets one configured `.bin` file. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back only when its content changes. If only the timestamp changes and the content is unchanged, the file is not overwritten and a tray notification is shown, similar to the firmware-ready notification. After sync is stopped, late `.bin` poll results no longer emit logs, notifications, or overwrites.
+Incremental sync only handles files that are created or modified on the host, and only when their extensions are included in `watch_extensions`. Each file is copied to a temporary file in the VM destination directory first, then moved over the final path, reducing the risk of damaging the target file if sync is paused or the app exits. VM files with the same relative paths are overwritten. Deletes, renames, and files outside the extension list are not automatically synced.
+
+`.bin` return only targets one configured `.bin` file. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back when its content changes. After the first baseline record, one timestamp-only update with unchanged content is also copied back once; later timestamp-only updates are skipped and reported through a tray notification, similar to the firmware-ready notification. After sync is stopped, late `.bin` poll results no longer emit logs, notifications, or overwrites.
 
 ## FAQ
 
@@ -120,7 +124,7 @@ Output\RL6492\firmware.bin
 
 ### The `.bin` is not copied back immediately after start
 
-This is expected. See the `.bin` return rules above.
+This is expected. Start sync before building in Keil; a `.bin` that already existed before Start is treated as the baseline and is not copied back immediately. See the `.bin` return rules above.
 
 ### The application still runs after closing the window
 

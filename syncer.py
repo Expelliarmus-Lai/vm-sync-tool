@@ -118,6 +118,7 @@ class SyncManager:
         self._startup_bin_state: tuple | None = None
         self._startup_bin_content_key: tuple[str, str] | None = None
         self._startup_bin_signature: tuple[str, int, str] | None = None
+        self._startup_bin_same_content_copy_pending = False
         self._startup_bin_baseline_pending = False
         self._cached_bin_target_key: tuple[str, str, str, str] | None = None
         self._cached_bin_target: tuple[str, str] | None = None
@@ -125,6 +126,8 @@ class SyncManager:
         self._guest_state_sidecar_vmx: str | None = None
         self._guest_state_sidecar_path: str | None = None
         self._stop_requested = False
+        self._full_sync_cancel = threading.Event()
+        self._full_sync_active = False
         self._last_bin_missing_log_time = 0.0
         self._synced_count = 0
         self._bin_ready = False
@@ -141,14 +144,24 @@ class SyncManager:
     def bin_ready(self) -> bool:
         return self._bin_ready
 
+    @property
+    def full_sync_active(self) -> bool:
+        return self._full_sync_active
+
     # ── Lifecycle ──────────────────────────────────────────
 
-    def start(self) -> bool:
+    def start(
+        self,
+        preflight_checked: bool = False,
+        preflight_snapshot: tuple | None = None,
+    ) -> bool:
         if self._running:
             return True
-        if not self._can_start():
+        if not self._can_start(
+            preflight_checked=preflight_checked,
+            preflight_snapshot=preflight_snapshot,
+        ):
             return False
-        self._clear_bin_target_cache()
         self._reset_bin_tracking()
         self._defer_startup_bin_baseline()
         self._stop_requested = False
@@ -171,11 +184,49 @@ class SyncManager:
         self._clear_guest_state_sidecar(delete=True)
         self._emit("info", "⏹", "同步服务已停止")
 
-    def _can_start(self) -> bool:
-        report = PreflightChecker(self.config.config).check()
-        if not report.ok:
-            self._emit("error", "✕", f"路径预检失败:\n{report.error_text}")
-            return False
+    def request_full_sync_cancel(self):
+        self._full_sync_cancel.set()
+        if self._full_sync_active:
+            self._emit("warning", "⏹", "已请求取消全量同步，正在等待当前 VM 文件操作安全收尾")
+            self._emit_progress(0.95, "正在取消全量同步，等待当前操作完成", active=True)
+
+    def preflight_snapshot(self) -> tuple:
+        cfg = self.config.config
+        return (
+            cfg.vmrun_path,
+            cfg.vmx_path,
+            cfg.vm_guest_user,
+            cfg.vm_guest_password,
+            cfg.host_project_path,
+            cfg.vm_project_path,
+            cfg.vm_bin_relative_path,
+            cfg.host_output_path,
+            cfg.debounce_ms,
+            cfg.poll_interval_sec,
+            tuple(cfg.watch_extensions),
+        )
+
+    def _can_reuse_preflight(
+        self,
+        preflight_checked: bool,
+        preflight_snapshot: tuple | None,
+    ) -> bool:
+        return bool(
+            preflight_checked
+            and preflight_snapshot is not None
+            and preflight_snapshot == self.preflight_snapshot()
+        )
+
+    def _can_start(
+        self,
+        preflight_checked: bool = False,
+        preflight_snapshot: tuple | None = None,
+    ) -> bool:
+        if not self._can_reuse_preflight(preflight_checked, preflight_snapshot):
+            report = PreflightChecker(self.config.config).check()
+            if not report.ok:
+                self._emit("error", "✕", f"路径预检失败:\n{report.error_text}")
+                return False
         try:
             Path(self.config.config.host_output_path).mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -193,6 +244,7 @@ class SyncManager:
         self._startup_bin_state = None
         self._startup_bin_content_key = None
         self._startup_bin_signature = None
+        self._startup_bin_same_content_copy_pending = False
         self._startup_bin_baseline_pending = False
         self._bin_ready = False
 
@@ -214,8 +266,9 @@ class SyncManager:
         state_key = (vm_bin.lower(), *guest_state)
         self._startup_bin_state = state_key
         self._startup_bin_content_key = self._bin_state_content_key(state_key)
+        self._startup_bin_same_content_copy_pending = True
         self._startup_bin_baseline_pending = False
-        self._emit("info", "i", f"已记录当前 .bin 状态，后续更新才会回传: {bin_filename}")
+        self._emit("info", "i", f"已记录当前 .bin 状态；后续时间更新时会回传，避免漏掉刚启动后的重新编译: {bin_filename}")
 
     def _record_startup_bin_signature(
         self,
@@ -276,24 +329,46 @@ class SyncManager:
             vm_dest = str(
                 (Path(self.config.config.vm_project_path) / rel).as_posix()
             ).replace("/", "\\")
+            vm_dest_path = PureWindowsPath(vm_dest)
+            vm_dir = str(vm_dest_path.parent)
+            vm_tmp = self._guest_path_join(
+                vm_dir,
+                f".{vm_dest_path.name}.vm_sync_tmp",
+            )
 
             self._emit("info", "↗", f"{rel} → VM")
 
-            result = subprocess.run(
-                self._vmrun_command([
+            mkdir = self._ensure_guest_directory(vm_dir)
+            if mkdir.returncode != 0:
+                err = self._vmrun_error(mkdir)
+                self._emit("error", "✗", f"{rel}: 创建 VM 目录失败: {err}")
+                return
+
+            result = self._run_vmrun(
+                [
                     "CopyFileFromHostToGuest",
                     self.config.config.vmx_path,
                     host_path,
-                    vm_dest,
-                ]),
-                capture_output=True, text=True, timeout=15,
-                creationflags=_CREATE_FLAGS,
+                    vm_tmp,
+                ],
+                timeout=15,
             )
 
             if result.returncode == 0:
+                if self._stop_requested or not self._running:
+                    self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
+                    return
+                move = self._move_guest_file(vm_tmp, vm_dest, timeout=15)
+                if move.returncode != 0:
+                    err = self._vmrun_error(move)
+                    if not self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False):
+                        self._emit("warning", "⚠", f"临时文件清理失败，请手动删除: {vm_tmp}")
+                    self._emit("error", "✗", f"{rel}: 写入 VM 目标失败: {err}")
+                    return
                 self._synced_count += 1
                 self._emit("success", "✓", str(rel))
             else:
+                self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
                 err = result.stderr.strip() or "unknown error"
                 self._emit("error", "✗", f"{rel}: {err}")
 
@@ -369,10 +444,20 @@ class SyncManager:
                 and self._startup_bin_content_key
                 and content_key == self._startup_bin_content_key
             ):
-                self._startup_bin_state = state_key
-                self._log_bin_content_unchanged_once(state_key, bin_filename)
-                self._bin_ready = False
-                return
+                if self._startup_bin_same_content_copy_pending:
+                    self._emit(
+                        "info",
+                        "i",
+                        f"检测到首次记录后时间已更新，内容未变化也回传一次: {bin_filename}",
+                    )
+                    self._startup_bin_state = None
+                    self._startup_bin_content_key = None
+                    self._startup_bin_same_content_copy_pending = False
+                else:
+                    self._startup_bin_state = state_key
+                    self._log_bin_content_unchanged_once(state_key, bin_filename)
+                    self._bin_ready = False
+                    return
             if (
                 content_key
                 and self._startup_bin_content_key
@@ -543,14 +628,21 @@ class SyncManager:
         return resolved
 
     def resolve_vm_bin_path_for_display(self) -> tuple[str, str] | None:
-        return self._resolve_vm_bin()
+        return self._resolve_vm_bin_cached()
 
     def validate_bin_target(self, emit: bool = False) -> BinTargetCheck:
         vm_bin = self.config.get_vm_bin_full_path()
         rel_path = PureWindowsPath(self.config.config.vm_bin_relative_path)
         if rel_path.suffix.lower() == ".bin":
-            return self._validate_explicit_bin_file(vm_bin, emit=emit)
-        return self._validate_bin_directory(vm_bin, emit=emit)
+            check = self._validate_explicit_bin_file(vm_bin, emit=emit)
+        else:
+            check = self._validate_bin_directory(vm_bin, emit=emit)
+        if check.resolved:
+            self._cached_bin_target_key = self._bin_target_cache_key()
+            self._cached_bin_target = check.resolved
+        elif not check.ok:
+            self._clear_bin_target_cache()
+        return check
 
     def _validate_explicit_bin_file(self, vm_bin: str, emit: bool = False) -> BinTargetCheck:
         filename = PureWindowsPath(vm_bin).name
@@ -593,9 +685,16 @@ class SyncManager:
 
         if len(listing.names) == 1:
             name = listing.names[0]
+            resolved_path = self._guest_path_join(vm_dir, name)
+            if emit:
+                self._emit(
+                    "info",
+                    "i",
+                    f"已自动选择唯一 .bin 文件: {self._guest_relative_to_project(resolved_path)}",
+                )
             return BinTargetCheck(
                 True,
-                resolved=(self._guest_path_join(vm_dir, name), name),
+                resolved=(resolved_path, name),
             )
         if not listing.names:
             message = f"未找到 VM .bin: {vm_dir}"
@@ -644,6 +743,11 @@ class SyncManager:
         return "file exists" in (result.stdout or "").lower()
 
     def _can_resolve_bin_target_for_start(self) -> bool:
+        if (
+            self._cached_bin_target_key == self._bin_target_cache_key()
+            and self._cached_bin_target
+        ):
+            return True
         return self.validate_bin_target(emit=True).ok
 
     def _guest_relative_to_project(self, vm_path: str) -> str:
@@ -959,6 +1063,57 @@ class SyncManager:
             creationflags=_CREATE_FLAGS,
         )
 
+    def _move_guest_file(self, source: str, destination: str, timeout: int):
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            f"Move-Item -LiteralPath {self._ps_literal(source)} "
+            f"-Destination {self._ps_literal(destination)} -Force"
+        )
+        return self._run_vmrun(
+            [
+                "runProgramInGuest",
+                self.config.config.vmx_path,
+                *self._guest_powershell_command(script),
+            ],
+            timeout=timeout,
+        )
+
+    def _cleanup_guest_path(self, vmx: str, path: str, is_dir: bool) -> bool:
+        try:
+            recurse = " -Recurse" if is_dir else ""
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$p={self._ps_literal(path)}; "
+                "if (Test-Path -LiteralPath $p) { "
+                f"Remove-Item -LiteralPath $p{recurse} -Force "
+                "}"
+            )
+            result = self._run_vmrun(
+                [
+                    "runProgramInGuest",
+                    vmx,
+                    *self._guest_powershell_command(script),
+                ],
+                timeout=20,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _cleanup_full_sync_guest_paths(self, vmx: str, paths: list[tuple[str, bool]]):
+        seen = set()
+        for path, is_dir in paths:
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            if not self._cleanup_guest_path(vmx, path, is_dir):
+                self._emit("warning", "⚠", f"清理失败，请手动删除: {path}")
+
+    def _cancel_full_sync(self, message: str) -> int:
+        self._emit("warning", "⏹", message)
+        self._emit_progress(1.0, f"全量同步已取消: {message}", active=False)
+        return 0
+
     def _create_full_sync_zip(self, host_root: Path, files: list[Path]) -> str:
         tmp = tempfile.NamedTemporaryFile(
             prefix="vm_sync_full_", suffix=".zip", delete=False
@@ -971,44 +1126,48 @@ class SyncManager:
         return tmp.name
 
     def full_sync(self) -> int:
-        """Initial full sync: upload a filtered zip and extract it in the VM."""
+        """Full sync with cooperative cancellation and temporary VM staging."""
+        self._full_sync_cancel.clear()
+        self._full_sync_active = True
         cfg = self.config.config
-        if not cfg.vmx_path:
-            self._emit("error", "✗", "请先配置 VMX 路径")
-            return 0
-        if not cfg.host_project_path:
-            self._emit("error", "✗", "请先配置宿主机工程路径")
-            return 0
-        if not cfg.vm_project_path:
-            self._emit("error", "✗", "请先配置 VM 工程路径")
-            return 0
-        if not self._has_guest_credentials():
-            return self._fail_full_sync(
-                "请先配置 VM 用户名和密码；空密码可能触发 VMware VIX 异常弹窗或卡死"
-            )
-
-        host_root = Path(cfg.host_project_path)
-        if not host_root.exists():
-            self._emit("error", "✗", "宿主机工程路径不存在，无法全量同步")
-            return 0
-
-        files = self._syncable_files(host_root)
-        total = len(files)
-        if total == 0:
-            self._emit("warning", "⚠", "没有找到需要同步的文件")
-            self._emit_progress(1.0, "没有需要同步的文件", active=False)
-            return 0
-
         zip_path = ""
-        guest_zip = self._guest_path_join(cfg.vm_project_path, "__vm_sync_fullsync.zip")
-        self._emit("info", "🔄", f"全量同步开始，准备打包 {total} 个文件")
-        self._emit_progress(0.0, "准备文件列表")
+        guest_cleanup: list[tuple[str, bool]] = []
 
         try:
+            if not cfg.vmx_path:
+                self._emit("error", "✗", "请先配置 VMX 路径")
+                return 0
+            if not cfg.host_project_path:
+                self._emit("error", "✗", "请先配置宿主机工程路径")
+                return 0
+            if not cfg.vm_project_path:
+                self._emit("error", "✗", "请先配置 VM 工程路径")
+                return 0
+            if not self._has_guest_credentials():
+                return self._fail_full_sync(
+                    "请先配置 VM 用户名和密码；空密码可能触发 VMware VIX 异常弹窗或卡死"
+                )
+
+            host_root = Path(cfg.host_project_path)
+            if not host_root.exists():
+                self._emit("error", "✗", "宿主机工程路径不存在，无法全量同步")
+                return 0
+
+            files = self._syncable_files(host_root)
+            total = len(files)
+            if total == 0:
+                self._emit("warning", "⚠", "没有找到需要同步的文件")
+                self._emit_progress(1.0, "没有需要同步的文件", active=False)
+                return 0
+
+            self._emit("info", "🔧", f"全量同步开始，准备打包 {total} 个文件")
+            self._emit_progress(0.0, "准备文件列表")
             self._emit_progress(0.15, "正在压缩工程文件")
             zip_path = self._create_full_sync_zip(host_root, files)
             zip_size_mb = Path(zip_path).stat().st_size / (1024 * 1024)
             self._emit("info", "📦", f"压缩包已生成 ({zip_size_mb:.1f} MB)")
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync("已在上传前取消")
 
             self._emit_progress(0.35, "正在创建 VM 目标目录")
             mkdir = self._ensure_guest_directory(cfg.vm_project_path)
@@ -1016,7 +1175,24 @@ class SyncManager:
                 err = self._vmrun_error(mkdir)
                 return self._fail_full_sync(f"创建 VM 目录失败: {err}")
 
-            self._emit_progress(0.50, "正在上传压缩包到 VM")
+            temp_marker = self._create_guest_tempfile(cfg.vmx_path)
+            if temp_marker:
+                guest_zip = temp_marker + ".zip"
+                guest_stage_dir = temp_marker + "_extract"
+                guest_cleanup.extend([
+                    (temp_marker, False),
+                    (guest_zip, False),
+                    (guest_stage_dir, True),
+                ])
+            else:
+                guest_zip = self._guest_path_join(cfg.vm_project_path, "__vm_sync_fullsync.zip")
+                guest_stage_dir = self._guest_path_join(cfg.vm_project_path, "__vm_sync_fullsync_extract")
+                guest_cleanup.extend([
+                    (guest_zip, False),
+                    (guest_stage_dir, True),
+                ])
+
+            self._emit_progress(0.50, "正在上传压缩包到 VM 临时目录")
             upload = self._run_vmrun(
                 [
                     "CopyFileFromHostToGuest",
@@ -1029,37 +1205,65 @@ class SyncManager:
             if upload.returncode != 0:
                 err = self._vmrun_error(upload)
                 return self._fail_full_sync(f"上传压缩包失败: {err}")
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync("已在上传后取消，正在清理临时文件")
 
-            self._emit_progress(0.75, "正在 VM 内解压覆盖")
-            ps_command = (
+            self._emit_progress(0.65, "正在创建 VM 临时解压目录")
+            stage_dir = self._ensure_guest_directory(guest_stage_dir)
+            if stage_dir.returncode != 0:
+                err = self._vmrun_error(stage_dir)
+                return self._fail_full_sync(f"创建 VM 临时解压目录失败: {err}")
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync("已在解压前取消，正在清理临时文件")
+
+            self._emit_progress(0.75, "正在 VM 临时目录内解压")
+            extract_script = (
                 "$ErrorActionPreference='Stop'; "
                 f"Expand-Archive -LiteralPath {self._ps_literal(guest_zip)} "
-                f"-DestinationPath {self._ps_literal(cfg.vm_project_path)} -Force"
+                f"-DestinationPath {self._ps_literal(guest_stage_dir)} -Force"
             )
             extract = self._run_vmrun(
                 [
-                    "runProgramInGuest", cfg.vmx_path,
-                    *self._guest_powershell_command(ps_command),
+                    "runProgramInGuest",
+                    cfg.vmx_path,
+                    *self._guest_powershell_command(extract_script),
                 ],
                 timeout=180,
             )
             if extract.returncode != 0:
                 err = self._vmrun_error(extract)
                 return self._fail_full_sync(f"VM 内解压失败: {err}")
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync("已在覆盖前取消，目标工程未被覆盖")
+
+            self._emit_progress(0.86, "正在覆盖 VM 工程目录")
+            cover_script = (
+                "$ErrorActionPreference='Stop'; "
+                f"New-Item -ItemType Directory -Force -Path {self._ps_literal(cfg.vm_project_path)} | Out-Null; "
+                f"Copy-Item -LiteralPath {self._ps_literal(self._guest_path_join(guest_stage_dir, '*'))} "
+                f"-Destination {self._ps_literal(cfg.vm_project_path)} -Recurse -Force"
+            )
+            cover = self._run_vmrun(
+                [
+                    "runProgramInGuest",
+                    cfg.vmx_path,
+                    *self._guest_powershell_command(cover_script),
+                ],
+                timeout=180,
+            )
+            if cover.returncode != 0:
+                err = self._vmrun_error(cover)
+                return self._fail_full_sync(f"VM 工程覆盖失败: {err}")
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync("取消请求在覆盖阶段完成后生效，已完成当前覆盖并开始清理")
 
             self._emit_progress(0.92, "正在清理临时文件")
-            cleanup = self._run_vmrun(
-                [
-                    "deleteFileInGuest", cfg.vmx_path, guest_zip,
-                ],
-                timeout=15,
-            )
-            if cleanup.returncode != 0:
-                self._emit("warning", "⚠", "VM 临时压缩包清理失败，可忽略")
+            self._cleanup_full_sync_guest_paths(cfg.vmx_path, guest_cleanup)
+            guest_cleanup = []
 
             self._synced_count += total
             self._emit_progress(1.0, f"全量同步完成 ({total}/{total})", active=False)
-            self._emit("success", "✅", f"全量同步完成 ({total}/{total})")
+            self._emit("success", "✓", f"全量同步完成 ({total}/{total})")
             return total
         except subprocess.TimeoutExpired as e:
             return self._fail_full_sync(f"全量同步超时: {e}")
@@ -1071,3 +1275,6 @@ class SyncManager:
                     Path(zip_path).unlink(missing_ok=True)
                 except Exception:
                     pass
+            if guest_cleanup and cfg.vmx_path:
+                self._cleanup_full_sync_guest_paths(cfg.vmx_path, guest_cleanup)
+            self._full_sync_active = False

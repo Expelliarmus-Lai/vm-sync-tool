@@ -35,6 +35,34 @@ class StartButtonTests(unittest.TestCase):
         self.assertIn("threading.Thread", source)
         self.assertIn("save_and_check", source)
 
+    def test_start_worker_uses_prechecked_fast_start(self):
+        calls = []
+
+        class FakeSync:
+            def preflight_snapshot(self):
+                return ("saved-config",)
+
+            def start(self, **kwargs):
+                calls.append(kwargs)
+                return True
+
+        panel = object.__new__(ControlPanel)
+        panel.app = SimpleNamespace(sync=FakeSync())
+        panel._start_preflight_snapshot = ("saved-config",)
+        panel.after = lambda _delay, callback: callback()
+        panel._finish_start = lambda started, error="": calls.append(("finish", started, error))
+
+        ControlPanel._start_worker(panel)
+
+        self.assertIn(
+            {
+                "preflight_checked": True,
+                "preflight_snapshot": ("saved-config",),
+            },
+            calls,
+        )
+        self.assertIn(("finish", True, ""), calls)
+
     def test_start_button_runs_save_check_before_background_start(self):
         calls = []
 
@@ -58,14 +86,29 @@ class StartButtonTests(unittest.TestCase):
         panel = object.__new__(ControlPanel)
         panel.app = SimpleNamespace(config_panel=FakeConfigPanel())
         panel.start_btn = FakeButton()
+        panel._start_preflight_snapshot = None
+
+        class FakeSync:
+            def preflight_snapshot(self):
+                calls.append("snapshot")
+                return ("saved-config",)
+
+        panel.app.sync = FakeSync()
 
         with patch("ui.threading.Thread", FakeThread):
             ControlPanel._start(panel)
 
         self.assertEqual(
-            ["save_and_check", ("config_enabled", False), "thread_created", "thread_started"],
+            [
+                "save_and_check",
+                "snapshot",
+                ("config_enabled", False),
+                "thread_created",
+                "thread_started",
+            ],
             calls,
         )
+        self.assertEqual(("saved-config",), panel._start_preflight_snapshot)
 
     def test_start_button_does_not_start_when_save_check_fails(self):
         calls = []

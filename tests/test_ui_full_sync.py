@@ -1,5 +1,6 @@
 import inspect
 import unittest
+from types import SimpleNamespace
 
 from ui import App, AutoScrollFrame, ConfigPanel, ControlPanel, DARK, LIGHT
 
@@ -166,9 +167,52 @@ class FullSyncUiTests(unittest.TestCase):
     def test_full_sync_disables_config_until_worker_finishes(self):
         full_sync_source = inspect.getsource(ConfigPanel._full_sync)
         worker_source = inspect.getsource(ConfigPanel._run_full_sync)
+        finish_source = inspect.getsource(ConfigPanel._finish_full_sync)
 
         self.assertIn("set_config_enabled(False)", full_sync_source)
-        self.assertIn("set_config_enabled(not self.app.sync.running)", worker_source)
+        self.assertIn("control.set_full_sync_active(True)", full_sync_source)
+        self.assertIn("_finish_full_sync", worker_source)
+        self.assertIn("control.set_full_sync_active(False)", finish_source)
+        self.assertIn("set_config_enabled(enabled)", finish_source)
+
+    def test_cancel_full_sync_requests_cancel_and_disables_button(self):
+        calls = []
+
+        class FakeButton:
+            def configure(self, **kwargs):
+                calls.append(("button", kwargs))
+
+        class FakeSync:
+            def request_full_sync_cancel(self):
+                calls.append("cancel")
+
+        class FakeLogPanel:
+            def append(self, event):
+                calls.append(("log", event.message))
+
+        panel = object.__new__(ConfigPanel)
+        panel.app = SimpleNamespace(sync=FakeSync(), log_panel=FakeLogPanel())
+        panel.fullsync_btn = FakeButton()
+
+        ConfigPanel._cancel_full_sync(panel)
+
+        self.assertIn("cancel", calls)
+        self.assertTrue(any(item[0] == "button" and item[1].get("state") == "disabled" for item in calls))
+        self.assertFalse(any(item[0] == "log" for item in calls))
+
+    def test_control_full_sync_active_disables_start_button(self):
+        calls = []
+
+        class FakeButton:
+            def configure(self, **kwargs):
+                calls.append(kwargs)
+
+        control = object.__new__(ControlPanel)
+        control.start_btn = FakeButton()
+
+        ControlPanel.set_full_sync_active(control, True)
+
+        self.assertTrue(any(kwargs.get("state") == "disabled" for kwargs in calls))
 
 
 if __name__ == "__main__":
