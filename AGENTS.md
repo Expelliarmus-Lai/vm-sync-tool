@@ -21,7 +21,10 @@ The intended workflow is:
 - VM-to-host `.bin` return is implemented and has been confirmed to transfer a file from the running VM.
 - `.bin` polling defaults to 1 second. Old configs with `poll_interval_sec = 3` are upgraded to `1`.
 - After sync starts, the first `.bin` poll records the current VM `.bin` as a startup baseline and does not copy it back immediately.
-- `.bin` is copied back only when content hash changes. If the timestamp changes but content is identical, the app logs a skipped update once for that file state.
+- Start runs the same save/check flow as `保存并检测` before the sync worker is launched. If preflight or `.bin` target validation fails, sync does not start.
+- Saving from the UI logs that paths have been saved to `config.json`, including the resolved config file path.
+- `.bin` is copied back only when content hash changes. If the timestamp changes but content is identical, the app logs a skipped update once for that file state and sends the same readiness-style host/tray notification.
+- Stop requests suppress late `.bin` poller logs, skip notifications, and guest-to-host copies after the service has been stopped.
 - The UI currently starts at `760x860`, has minimum size `680x720`, and has no maximum-size cap.
 - The source repository has bilingual project documentation: Chinese `README.md` and English `README.en.md`.
 - The release user guide is also bilingual: `docs/USER_GUIDE.md` and `docs/USER_GUIDE.en.md`.
@@ -171,6 +174,7 @@ Startup
   -> verify vmrun list and running VMX during preflight
 
 Host edit
+  -> Start button saves config and runs save/check preflight first
   -> watchdog
   -> debounce(500 ms)
   -> vmrun CopyFileFromHostToGuest
@@ -188,6 +192,8 @@ Keil build in VM
   -> app polls configured VM .bin every 1 second
   -> read LastWriteTimeUtc ticks, length, SHA256
   -> vmrun CopyFileFromGuestToHost only when content changes after startup
+  -> timestamp-only/content-identical changes log once and notify the host/tray
+  -> stop requests prevent late poller logs, notifications, and copies
   -> host output directory
 ```
 
@@ -231,7 +237,7 @@ dist\VM Sync\
 
 ## Incremental Sync Behavior
 
-- Starts only after preflight and `.bin` target validation pass.
+- Start first saves the current UI config, logs the `config.json` save path, and starts only after preflight and `.bin` target validation pass.
 - Watches `host_project_path` recursively.
 - Debounces changes by `debounce_ms`.
 - Copies only files whose suffix is in `watch_extensions`.
@@ -248,12 +254,14 @@ dist\VM Sync\
 - The guest file state is `(LastWriteTimeUtc.Ticks, Length, SHA256)`.
 - On the first poll after service start, an existing VM `.bin` becomes the baseline and is ignored until it changes after startup.
 - If guest file state cannot be read while establishing the startup baseline, the app copies the existing VM `.bin` to a host temp file only to calculate a signature; it still does not overwrite `host_output_path`.
+- If the timestamp changes but the content hash is identical, the app logs one skipped overwrite for that file state and shows a host/tray notification.
+- After `stop()` is requested, in-flight `.bin` checks must not emit late skip logs/notifications or copy guest files back to the host.
 - If stdout from guest PowerShell is unreliable, the app uses one guest temp sidecar file from `CreateTempfileInGuest`, copies it back, parses it, and deletes it when sync stops/quits.
 - Guest state sidecar files must not be created in the project `Output` directory.
 
 ## Preflight Rules
 
-General preflight is shared by `保存并检测`, start/pause, and full sync. Save/check and start also validate the guest `.bin` target uniqueness:
+General preflight is shared by `保存并检测`, start/pause, and full sync. `保存并检测` and start save the current UI config first and log the `config.json` path. Save/check and start also validate the guest `.bin` target uniqueness:
 
 - `vmrun_path` must be configured and exist.
 - `vmrun list` must complete without timeout/error.

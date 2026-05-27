@@ -258,6 +258,8 @@ class AutoScrollFrame(ctk.CTkFrame):
         self._scroll_sync_job = None
         self._scroll_region_dirty = True
         self._scrollbar_visible = False
+        self._cached_content_h = 0
+        self._last_sync_time = 0.0
 
         self.inner.bind("<Configure>", self._on_content_change, add="+")
         self.canvas.bind("<Configure>", self._on_canvas_change, add="+")
@@ -279,7 +281,12 @@ class AutoScrollFrame(ctk.CTkFrame):
         self._last_canvas_size = size
         w, _h = size
         if w > 4:
-            self.canvas.itemconfig("inner", width=w)
+            try:
+                cur_w = int(self.canvas.itemcget("inner", "width"))
+            except (ValueError, TypeError, tk.TclError):
+                cur_w = 0
+            if cur_w != w:
+                self.canvas.itemconfig("inner", width=w)
         self._schedule_scroll_sync()
 
     def _schedule_scroll_sync(self):
@@ -289,22 +296,32 @@ class AutoScrollFrame(ctk.CTkFrame):
 
     def _sync_scrollbar(self):
         self._scroll_sync_job = None
-        bbox = self.canvas.bbox("all")
-        if not bbox:
+        now = time.monotonic()
+        # Cooldown: cap at ~30 Hz to avoid flooding the event loop during
+        # rapid Configure cascades — every bbox("all") triggers a full
+        # geometry walk and starves the window manager's drag loop.
+        if self._last_sync_time > 0 and now - self._last_sync_time < 0.033:
+            self._scroll_sync_job = self.after(33, self._sync_scrollbar)
             return
         if self._scroll_region_dirty:
+            bbox = self.canvas.bbox("all")
+            if not bbox:
+                self._last_sync_time = now
+                return
             self.canvas.configure(scrollregion=bbox)
             self._scroll_region_dirty = False
-        content_h = bbox[3] - bbox[1]
+            self._cached_content_h = bbox[3] - bbox[1]
         canvas_h = self.canvas.winfo_height()
-        should_show = content_h > canvas_h + 2
+        should_show = self._cached_content_h > canvas_h + 2
         if should_show == self._scrollbar_visible:
+            self._last_sync_time = now
             return
         self._scrollbar_visible = should_show
         if should_show:
             self.scrollbar.grid(row=0, column=1, sticky="ns")
         else:
             self.scrollbar.grid_remove()
+        self._last_sync_time = time.monotonic()
 
     def _on_scrollbar_move(self, *args):
         self.canvas.yview(*args)
@@ -485,7 +502,9 @@ class ControlPanel(ctk.CTkFrame):
         self.uptime_label.pack(anchor="w")
 
     def _start(self):
-        self.app.config_panel._save_values_only()
+        report = self.app.config_panel.save_and_check()
+        if not report.ok:
+            return
         self.app.config_panel.set_config_enabled(False)
         self.start_btn.configure(state="disabled")
         threading.Thread(target=self._start_worker, daemon=True).start()
@@ -773,11 +792,19 @@ class ConfigPanel(ctk.CTkFrame):
             self._entries[key].delete(0, "end")
             self._entries[key].insert(0, path)
 
-    def _save_values_only(self):
+    def _save_values_only(self, emit_log: bool = False):
         for key, entry in self._entries.items():
             setattr(self.app.cm.config, key, entry.get().strip())
         self.app.resolve_vmrun_path(save=True)
         self.app.cm.save()
+        if emit_log and hasattr(self.app, "log_panel"):
+            self.app.log_panel.append(
+                LogEvent(
+                    "✓",
+                    f"路径已保存至 config.json 文件: {self.app.cm.config_path}",
+                    "success",
+                )
+            )
 
     def update_bin_path_hint(self, check_guest: bool = False):
         p = current_palette()
@@ -840,7 +867,10 @@ class ConfigPanel(ctk.CTkFrame):
         self.fullsync_btn.configure(state=state)
 
     def _save(self):
-        self._save_values_only()
+        self.save_and_check()
+
+    def save_and_check(self) -> PreflightReport:
+        self._save_values_only(emit_log=True)
         report = self.app._run_preflight(dedupe_errors=False)
         self.update_bin_path_hint(check_guest=report.ok)
         p = current_palette()
@@ -851,9 +881,10 @@ class ConfigPanel(ctk.CTkFrame):
         else:
             self.status_label.configure(text="✗ 已保存，检测失败", text_color=p["error"])
         self.after(2000, lambda: self.status_label.configure(text=""))
+        return report
 
     def _full_sync(self):
-        self._save_values_only()
+        self._save_values_only(emit_log=True)
         report = self.app._run_preflight(for_full_sync=True, show_dialog=True)
         if not report.ok:
             return
@@ -979,6 +1010,7 @@ class LogPanel(ctk.CTkFrame):
         self.textbox.configure(state="disabled")
 
         self._line_count = 0
+        self._tag_mode = None
 
     def append(self, event: LogEvent):
         msg_tag = log_message_tag(event.level)
@@ -997,6 +1029,10 @@ class LogPanel(ctk.CTkFrame):
         self.textbox.configure(state="disabled")
 
     def _configure_log_tags(self):
+        mode = ctk.get_appearance_mode()
+        if mode == getattr(self, '_tag_mode', None):
+            return
+        self._tag_mode = mode
         p = current_palette()
         self.textbox.tag_config("ts_tag", foreground=p["text_dim"])
         self.textbox.tag_config("msg_success", foreground=p["success"])
@@ -1032,6 +1068,7 @@ class LogPanel(ctk.CTkFrame):
         self.configure(fg_color=p["card"], border_color=p["border"])
         self._header_text_label.configure(text_color=p["text"])
         self.textbox.configure(fg_color=p["log_bg"], border_color=p["entry_border"])
+        self._tag_mode = None
         self._configure_log_tags()
         self.progress_label.configure(text_color=p["text_dim"])
         self.progress_bar.configure(progress_color=p["accent"], fg_color=p["muted_button"])
@@ -1477,6 +1514,8 @@ class App:
                     self.log_panel.append(data)
                 elif event_type == "bin_ready":
                     self._on_bin_ready(data)
+                elif event_type == "bin_unchanged":
+                    self._on_bin_unchanged(data)
                 elif event_type == "full_sync_progress":
                     self.log_panel.update_progress(data)
                 elif event_type == "info" and data == "sync_stopped":
@@ -1495,6 +1534,16 @@ class App:
         if self._tray_icon:
             try:
                 self._tray_icon.notify(f"固件已就绪: {filename}", "VM Sync")
+            except Exception:
+                pass
+
+    def _on_bin_unchanged(self, filename: str):
+        if self._tray_icon:
+            try:
+                self._tray_icon.notify(
+                    f"固件内容未变化，已跳过覆盖: {filename}",
+                    "VM Sync",
+                )
             except Exception:
                 pass
 

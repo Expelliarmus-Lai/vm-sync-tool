@@ -409,11 +409,63 @@ class SyncManagerTests(unittest.TestCase):
 
             self.assertEqual(1, len(copies))
             logs = []
+            unchanged_events = []
             while not manager.event_queue.empty():
                 event_type, data = manager.event_queue.get_nowait()
                 if event_type == "log":
                     logs.append(data.message)
+                if event_type == "bin_unchanged":
+                    unchanged_events.append(data)
             self.assertTrue(any("内容未变化" in message for message in logs))
+            self.assertEqual(["firmware.bin"], unchanged_events)
+
+    def test_stop_suppresses_late_unchanged_bin_update_events(self):
+        manager, _cm = self._manager()
+        manager._stop_requested = True
+
+        manager._log_bin_content_unchanged_once(("bin", "state"), "firmware.bin")
+
+        self.assertTrue(manager.event_queue.empty())
+
+    def test_stop_during_bin_state_read_suppresses_late_guest_copy(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+            manager._last_bin_state = (
+                r"c:\project\output\firmware.bin",
+                638838144000000000,
+                11,
+                "a" * 64,
+            )
+            (Path(out) / "firmware.bin").write_bytes(b"firmware-v1")
+
+            copies = []
+
+            def stop_during_state_read(_vm_path, _vmx):
+                manager._stop_requested = True
+                return (638838144000100000, 11, "b" * 64)
+
+            def fake_run(cmd, **_kwargs):
+                if "fileExistsInGuest" in cmd:
+                    return Completed(stdout="The file exists.", returncode=0)
+                if "CopyFileFromGuestToHost" in cmd:
+                    copies.append(cmd)
+                    Path(cmd[-1]).write_bytes(b"firmware-v2")
+                    return Completed(returncode=0)
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(manager, "_get_guest_file_state", side_effect=stop_during_state_read):
+                manager._check_bin()
+
+            self.assertEqual([], copies)
+            self.assertEqual(b"firmware-v1", (Path(out) / "firmware.bin").read_bytes())
 
     def test_poll_loop_logs_unexpected_bin_check_errors(self):
         manager, cm = self._manager()

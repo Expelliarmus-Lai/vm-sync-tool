@@ -75,7 +75,7 @@ Do not enter an absolute path inside the VM. This field is relative to the "VM p
 3. Fill in the configuration fields.
 4. Click "保存并检测" (Save and Check).
 5. When setting up a project for the first time, click "全量同步" (Full Sync) to copy the whole project into the VM.
-6. Click "启动" (Start) to begin watching host file changes and VM `.bin` output.
+6. Click "启动" (Start). The application first saves the configuration and runs the same checks as "保存并检测" (Save and Check). After the checks pass, it begins watching host file changes and VM `.bin` output.
 7. Build the project manually with Keil inside the VM.
 8. After the `.bin` content changes, the application automatically copies it back to the firmware return directory.
 
@@ -94,9 +94,11 @@ After start sync is enabled, the application does two things:
 - Watches host project file changes and incrementally syncs them into the VM.
 - Polls the VM `.bin` output file and copies it back to the host when the content changes.
 
+When you click Start, the application first saves the current configuration, logs that the paths have been saved to `config.json`, and runs the same checks as "Save and Check". If the checks fail, sync does not start; fix the configuration according to the log first.
+
 Incremental sync only handles files that are created or modified on the host, and only when their extensions are included in `watch_extensions`. VM files with the same relative paths are overwritten. Deletes, renames, and files outside the extension list are not automatically synced.
 
-`.bin` return only targets one configured `.bin` file. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back only when its content changes. If only the timestamp changes and the content is unchanged, the file is not overwritten.
+`.bin` return only targets one configured `.bin` file. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back only when its content changes. If only the timestamp changes and the content is unchanged, the file is not overwritten and a tray notification is shown, similar to the firmware-ready notification. After sync is stopped, late `.bin` poll results no longer emit logs, notifications, or overwrites.
 
 ## FAQ
 

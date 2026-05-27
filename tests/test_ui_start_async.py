@@ -8,8 +8,11 @@ from ui import App, ControlPanel
 
 
 class FakeButton:
+    def __init__(self):
+        self.configures = []
+
     def configure(self, **_kwargs):
-        pass
+        self.configures.append(_kwargs)
 
 
 class FakeLabel:
@@ -30,7 +33,60 @@ class StartButtonTests(unittest.TestCase):
         source = inspect.getsource(ControlPanel._start)
 
         self.assertIn("threading.Thread", source)
-        self.assertNotIn("_validate_and_save", source)
+        self.assertIn("save_and_check", source)
+
+    def test_start_button_runs_save_check_before_background_start(self):
+        calls = []
+
+        class FakeConfigPanel:
+            def save_and_check(self):
+                calls.append("save_and_check")
+                return PreflightReport()
+
+            def set_config_enabled(self, enabled):
+                calls.append(("config_enabled", enabled))
+
+        class FakeThread:
+            def __init__(self, target, daemon=False):
+                calls.append("thread_created")
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                calls.append("thread_started")
+
+        panel = object.__new__(ControlPanel)
+        panel.app = SimpleNamespace(config_panel=FakeConfigPanel())
+        panel.start_btn = FakeButton()
+
+        with patch("ui.threading.Thread", FakeThread):
+            ControlPanel._start(panel)
+
+        self.assertEqual(
+            ["save_and_check", ("config_enabled", False), "thread_created", "thread_started"],
+            calls,
+        )
+
+    def test_start_button_does_not_start_when_save_check_fails(self):
+        calls = []
+
+        class FakeConfigPanel:
+            def save_and_check(self):
+                calls.append("save_and_check")
+                return PreflightReport(errors=["bad path"])
+
+            def set_config_enabled(self, enabled):
+                calls.append(("config_enabled", enabled))
+
+        panel = object.__new__(ControlPanel)
+        panel.app = SimpleNamespace(config_panel=FakeConfigPanel())
+        panel.start_btn = FakeButton()
+
+        with patch("ui.threading.Thread", side_effect=AssertionError("should not start")):
+            ControlPanel._start(panel)
+
+        self.assertEqual(["save_and_check"], calls)
+        self.assertEqual([], panel.start_btn.configures)
 
     def test_repeated_preflight_errors_are_deduplicated(self):
         source = inspect.getsource(App._run_preflight)

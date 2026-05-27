@@ -64,7 +64,53 @@ class FullSyncUiTests(unittest.TestCase):
     def test_save_button_forces_preflight_log_feedback(self):
         source = inspect.getsource(ConfigPanel._save)
 
-        self.assertIn("dedupe_errors=False", source)
+        self.assertIn("save_and_check", source)
+
+    def test_save_values_logs_config_path_when_requested(self):
+        saved = []
+
+        class FakeEntry:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+        class FakeConfigManager:
+            config_path = r"C:\tools\VM Sync\config.json"
+
+            def __init__(self):
+                self.config = type("Config", (), {})()
+
+            def save(self):
+                saved.append("save")
+
+        class FakeLogPanel:
+            def __init__(self):
+                self.events = []
+
+            def append(self, event):
+                self.events.append(event)
+
+        cm = FakeConfigManager()
+        log_panel = FakeLogPanel()
+        panel = object.__new__(ConfigPanel)
+        panel.app = type("App", (), {})()
+        panel.app.cm = cm
+        panel.app.log_panel = log_panel
+        panel.app.resolve_vmrun_path = lambda save=False: ""
+        panel._entries = {
+            "host_project_path": FakeEntry(r"C:\project"),
+            "vm_project_path": FakeEntry(r"C:\vm_project"),
+        }
+
+        ConfigPanel._save_values_only(panel, emit_log=True)
+
+        self.assertEqual(["save"], saved)
+        self.assertEqual(r"C:\project", cm.config.host_project_path)
+        self.assertEqual(r"C:\vm_project", cm.config.vm_project_path)
+        self.assertTrue(any("路径已保存至 config.json 文件" in event.message for event in log_panel.events))
+        self.assertTrue(any("config.json" in event.message for event in log_panel.events))
 
     def test_start_pause_buttons_use_larger_aligned_icons(self):
         source = inspect.getsource(ControlPanel.__init__)

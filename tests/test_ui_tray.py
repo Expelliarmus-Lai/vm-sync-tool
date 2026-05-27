@@ -89,6 +89,22 @@ class TrayMenuTests(unittest.TestCase):
         self.assertIsNone(app._tray_icon)
         self.assertTrue(app._shutting_down)
 
+    def test_unchanged_bin_event_shows_tray_notification(self):
+        notifications = []
+
+        class FakeTrayIcon:
+            def notify(self, message, title):
+                notifications.append((message, title))
+
+        app = SimpleNamespace(_tray_icon=FakeTrayIcon())
+
+        App._on_bin_unchanged(app, "firmware.bin")
+
+        self.assertEqual(
+            [("固件内容未变化，已跳过覆盖: firmware.bin", "VM Sync")],
+            notifications,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -124,6 +124,7 @@ class SyncManager:
         self._guest_state_output_mode: str | None = None
         self._guest_state_sidecar_vmx: str | None = None
         self._guest_state_sidecar_path: str | None = None
+        self._stop_requested = False
         self._last_bin_missing_log_time = 0.0
         self._synced_count = 0
         self._bin_ready = False
@@ -150,6 +151,7 @@ class SyncManager:
         self._clear_bin_target_cache()
         self._reset_bin_tracking()
         self._defer_startup_bin_baseline()
+        self._stop_requested = False
         self._running = True
         self._start_observer()
         self._start_poller()
@@ -157,6 +159,7 @@ class SyncManager:
         return True
 
     def stop(self):
+        self._stop_requested = True
         self._running = False
         if self._debouncer:
             self._debouncer.cancel_all()
@@ -331,6 +334,9 @@ class SyncManager:
                 time.sleep(0.5)
 
     def _check_bin(self):
+        if self._stop_requested:
+            self._bin_ready = False
+            return
         vmx = self.config.config.vmx_path
         resolved = self._resolve_vm_bin_cached()
         if not resolved:
@@ -345,6 +351,9 @@ class SyncManager:
             / bin_filename
         )
         guest_state = self._get_guest_file_state(vm_bin, vmx)
+        if self._stop_requested:
+            self._bin_ready = False
+            return
         if guest_state is not None:
             if self._startup_bin_baseline_pending:
                 self._record_startup_bin_state(vm_bin, bin_filename, guest_state)
@@ -407,6 +416,10 @@ class SyncManager:
             capture_output=True, text=True, timeout=30,
             creationflags=_CREATE_FLAGS,
         )
+        if self._stop_requested:
+            tmp_path.unlink(missing_ok=True)
+            self._bin_ready = False
+            return
 
         if result.returncode == 0:
             data = tmp_path.read_bytes()
@@ -489,6 +502,8 @@ class SyncManager:
         )
 
     def _log_bin_content_unchanged_once(self, log_key: tuple, bin_filename: str):
+        if self._stop_requested:
+            return
         if log_key == self._last_bin_unchanged_log_state:
             return
         self._emit(
@@ -496,6 +511,7 @@ class SyncManager:
             "ℹ",
             f"检测到 {bin_filename} 更新，但内容未变化，已跳过覆盖",
         )
+        self.event_queue.put(("bin_unchanged", bin_filename))
         self._last_bin_unchanged_log_state = log_key
 
     def _resolve_vm_bin(self) -> tuple[str, str] | None:
