@@ -1109,11 +1109,11 @@ class ConfigPanel(ctk.CTkFrame):
         self.update_bin_path_hint(check_guest=report.ok)
         p = current_palette()
         if report.ok and report.warning_text:
-            self.status_label.configure(text="⚠ 已保存，有警告", text_color=p["warning"])
+            self.status_label.configure(text=f"{LogIcon.WARNING} 已保存，有警告", text_color=p["warning"])
         elif report.ok:
-            self.status_label.configure(text="✓ 已保存，检测通过", text_color=p["success"])
+            self.status_label.configure(text=f"{LogIcon.SUCCESS} 已保存，检测通过", text_color=p["success"])
         else:
-            self.status_label.configure(text="✗ 已保存，检测失败", text_color=p["error"])
+            self.status_label.configure(text=f"{LogIcon.ERROR} 已保存，检测失败", text_color=p["error"])
         self.after(2000, lambda: self.status_label.configure(text=""))
         return report
 

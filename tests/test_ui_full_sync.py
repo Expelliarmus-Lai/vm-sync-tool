@@ -179,6 +179,16 @@ class FullSyncUiTests(unittest.TestCase):
         self.assertIn('"check",\n            18', source)
         self.assertIn('"upload",\n            18', source)
 
+    def test_save_check_status_uses_log_icons_only_in_config_hint(self):
+        save_source = inspect.getsource(ConfigPanel.save_and_check)
+        control_source = inspect.getsource(ControlPanel)
+
+        for icon_name in ("WARNING", "SUCCESS", "ERROR"):
+            self.assertIn(f"LogIcon.{icon_name}", save_source)
+        self.assertNotIn('"✓', save_source)
+        self.assertNotIn('"✗', save_source)
+        self.assertIn("就绪 ✓", control_source)
+
     def test_main_window_starts_large_and_has_no_small_max_size_cap(self):
         source = inspect.getsource(App.__init__)
 
