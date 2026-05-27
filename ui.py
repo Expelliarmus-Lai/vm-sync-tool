@@ -719,17 +719,19 @@ class ConfigPanel(ctk.CTkFrame):
         entries_frame.pack(fill="x", padx=14, pady=(0, 4))
 
         fields = [
-            ("vmx_path", "VMX 路径", "file", "选择 VMware 虚拟机 .vmx 文件"),
-            ("vm_guest_user", "VM 用户名", "path", "虚拟机 Windows 登录用户名"),
-            ("vm_guest_password", "VM 密码", "password", "虚拟机 Windows 登录密码"),
-            ("host_project_path", "宿主机工程路径", "dir", "选择宿主机上的工程目录"),
-            ("vm_project_path", "VM 工程路径", "path", "虚拟机内工程目录 (例: C:\\project)"),
-            ("vm_bin_relative_path", ".bin 相对路径", "path", "可填 .bin 文件或目录 (例: Output\\RL6492)"),
-            ("host_output_path", "固件回传目录", "dir", "选择 .bin 回传到宿主机后的保存目录"),
+            ("vmx_path", "VMX 路径", "file", "当前运行 VM 的 .vmx"),
+            ("vm_guest_user", "VM 用户名", "path", "VM Windows 登录用户名"),
+            ("vm_guest_password", "VM 密码", "password", "VM Windows 登录密码"),
+            ("host_project_path", "宿主机工程路径", "dir", "宿主机 Keil 工程根目录"),
+            ("vm_project_path", "VM 工程路径", "path", "VM 内工程根目录，如 C:\\project"),
+            ("vm_bin_relative_path", ".bin 相对路径", "path", "相对 VM 工程，如 Output\\RL6492"),
+            ("host_output_path", "固件回传目录", "dir", "宿主机固件回传目录"),
         ]
 
         for key, label, mode, placeholder in fields:
             self._add_field(entries_frame, key, label, mode, placeholder)
+        self._refresh_entry_placeholders()
+        self.after_idle(self._refresh_entry_placeholders)
 
         self.bin_resolved_label = ctk.CTkLabel(
             self,
@@ -803,6 +805,7 @@ class ConfigPanel(ctk.CTkFrame):
             font=ui_font(size=12),
             border_color=current_palette()["entry_border"],
             fg_color=current_palette()["entry_bg"],
+            placeholder_text_color=current_palette()["text_dim"],
             placeholder_text=placeholder,
             **entry_kwargs,
         )
@@ -901,6 +904,37 @@ class ConfigPanel(ctk.CTkFrame):
         entry.delete(0, "end")
         if value:
             entry.insert(0, value)
+        else:
+            self._refresh_single_entry_placeholder(entry)
+
+    def _refresh_entry_placeholders(self):
+        for entry in self._entries.values():
+            if entry.get() == "" and not self._entry_has_focus(entry):
+                self._refresh_single_entry_placeholder(entry)
+
+    def _refresh_single_entry_placeholder(self, entry):
+        focus_out = getattr(entry, "_entry_focus_out", None)
+        if callable(focus_out):
+            focus_out()
+        else:
+            activate = getattr(entry, "_activate_placeholder", None)
+            if callable(activate):
+                activate()
+
+        draw = getattr(entry, "_draw", None)
+        if callable(draw):
+            draw()
+
+    def _entry_has_focus(self, entry) -> bool:
+        try:
+            focused = entry.winfo_toplevel().focus_get()
+        except Exception:
+            return False
+        while focused is not None:
+            if focused is entry or focused is getattr(entry, "_entry", None):
+                return True
+            focused = getattr(focused, "master", None)
+        return False
 
     def _current_vm_project_path_for_normalization(self) -> str:
         entry = self._entries.get("vm_project_path")
@@ -1163,6 +1197,7 @@ class ConfigPanel(ctk.CTkFrame):
             entry.configure(
                 border_color=p["entry_border"],
                 fg_color=p["entry_bg"],
+                placeholder_text_color=p["text_dim"],
             )
         self.bin_resolved_label.configure(fg_color=p["hint_bg"])
         for button in self._browse_buttons.values():
@@ -1462,6 +1497,34 @@ class App:
         # Status bar (fixed at bottom)
         self.status_bar = StatusBar(self.window, self)
         self.status_bar.pack(fill="x", padx=18, pady=(0, 8))
+
+        self.window.bind_all(
+            "<Button-1>",
+            self._clear_entry_focus_on_background_click,
+            add="+",
+        )
+
+    def _clear_entry_focus_on_background_click(self, event):
+        if self._is_text_input_event_widget(getattr(event, "widget", None)):
+            return
+        try:
+            self.window.focus_set()
+        except Exception:
+            pass
+
+    def _is_text_input_event_widget(self, widget) -> bool:
+        while widget is not None:
+            if isinstance(widget, (tk.Entry, tk.Text)):
+                return True
+            if isinstance(widget, (ctk.CTkEntry, ctk.CTkTextbox)):
+                return True
+            try:
+                if widget.winfo_class() in {"Entry", "Text"}:
+                    return True
+            except Exception:
+                pass
+            widget = getattr(widget, "master", None)
+        return False
 
     # ── Theme Refresh ────────────────────────────────────
 

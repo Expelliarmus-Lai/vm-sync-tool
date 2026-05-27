@@ -23,6 +23,57 @@ class FullSyncUiTests(unittest.TestCase):
         self.assertIn("固件回传目录", source)
         self.assertNotIn("宿主机输出路径", source)
 
+    def test_config_placeholders_are_short_and_specific(self):
+        source = inspect.getsource(ConfigPanel._build)
+
+        for placeholder in (
+            "当前运行 VM 的 .vmx",
+            "VM Windows 登录用户名",
+            "VM Windows 登录密码",
+            "宿主机 Keil 工程根目录",
+            "VM 内工程根目录，如 C:\\\\project",
+            "相对 VM 工程，如 Output\\\\RL6492",
+            "宿主机固件回传目录",
+        ):
+            self.assertIn(placeholder, source)
+
+    def test_config_panel_refreshes_empty_placeholders_after_build(self):
+        source = inspect.getsource(ConfigPanel._build)
+
+        self.assertIn("_refresh_entry_placeholders", source)
+        self.assertIn("after_idle", source)
+
+    def test_background_click_clears_entry_focus(self):
+        app = object.__new__(App)
+
+        class FakeWindow:
+            def __init__(self):
+                self.focus_calls = 0
+
+            def focus_set(self):
+                self.focus_calls += 1
+
+        class FakeWidget:
+            def __init__(self, class_name, master=None):
+                self.class_name = class_name
+                self.master = master
+
+            def winfo_class(self):
+                return self.class_name
+
+        app.window = FakeWindow()
+        entry = FakeWidget("Entry")
+        entry_child = FakeWidget("Canvas", master=entry)
+        label = FakeWidget("Label")
+
+        self.assertTrue(App._is_text_input_event_widget(app, entry_child))
+        self.assertFalse(App._is_text_input_event_widget(app, label))
+
+        App._clear_entry_focus_on_background_click(app, SimpleNamespace(widget=entry_child))
+        App._clear_entry_focus_on_background_click(app, SimpleNamespace(widget=label))
+
+        self.assertEqual(1, app.window.focus_calls)
+
     def test_section_headers_use_vector_icons(self):
         source = inspect.getsource(ConfigPanel)
 

@@ -30,6 +30,19 @@ class FakeEntry:
         self.value = value
 
 
+class FakePlaceholderEntry(FakeEntry):
+    def __init__(self, value=""):
+        super().__init__(value)
+        self.placeholder_refreshes = 0
+        self.draws = 0
+
+    def _entry_focus_out(self):
+        self.placeholder_refreshes += 1
+
+    def _draw(self):
+        self.draws += 1
+
+
 class FakeSync:
     def __init__(self, resolved):
         self.resolved = resolved
@@ -158,6 +171,16 @@ class ConfigPanelBinHintTests(unittest.TestCase):
             panel._browse("host_project_path", "dir")
 
         self.assertEqual(r"C:\Users\h\Desktop\project", panel._entries["host_project_path"].get())
+
+    def test_empty_replacement_refreshes_placeholder_immediately(self):
+        panel = object.__new__(ConfigPanel)
+        entry = FakePlaceholderEntry("old value")
+
+        panel._replace_entry_value(entry, "")
+
+        self.assertEqual("", entry.get())
+        self.assertEqual(1, entry.placeholder_refreshes)
+        self.assertEqual(1, entry.draws)
 
     def test_directory_bin_path_without_unique_bin_prompts_for_specific_file(self):
         panel = self._panel(r"Output\RL6492", None)
