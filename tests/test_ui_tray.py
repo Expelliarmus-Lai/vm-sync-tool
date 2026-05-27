@@ -89,6 +89,50 @@ class TrayMenuTests(unittest.TestCase):
         self.assertIsNone(app._tray_icon)
         self.assertTrue(app._shutting_down)
 
+    def test_shutdown_waits_briefly_for_full_sync_cleanup(self):
+        calls = []
+
+        class FakeWindow:
+            def quit(self):
+                calls.append("quit")
+
+            def destroy(self):
+                calls.append("destroy")
+
+        class FakeSync:
+            full_sync_active = True
+
+            def request_full_sync_cancel(self):
+                calls.append("full_sync.cancel")
+
+            def stop(self):
+                calls.append("sync.stop")
+
+        class FakeThread:
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                calls.append(("join", timeout))
+
+        app = SimpleNamespace(
+            window=FakeWindow(),
+            sync=FakeSync(),
+            config_panel=SimpleNamespace(_full_sync_thread=FakeThread()),
+            _single_instance_sock=None,
+            _tray_icon=None,
+            _shutting_down=False,
+            _after_jobs=set(),
+        )
+        app._cancel_after_jobs = lambda: App._cancel_after_jobs(app)
+
+        App._shutdown(app)
+
+        self.assertEqual(
+            ["full_sync.cancel", "sync.stop", ("join", 2.0), "quit", "destroy"],
+            calls,
+        )
+
     def test_unchanged_bin_event_shows_tray_notification(self):
         notifications = []
 

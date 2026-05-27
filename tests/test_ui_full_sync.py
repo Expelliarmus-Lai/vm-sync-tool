@@ -1,4 +1,5 @@
 import inspect
+import tkinter as tk
 import unittest
 from types import SimpleNamespace
 
@@ -235,6 +236,21 @@ class FullSyncUiTests(unittest.TestCase):
         self.assertIn("_finish_full_sync", worker_source)
         self.assertIn("control.set_full_sync_active(False)", finish_source)
         self.assertIn("set_config_enabled(enabled)", finish_source)
+
+    def test_finish_full_sync_ignores_tcl_error_after_shutdown(self):
+        panel = object.__new__(ConfigPanel)
+        panel.app = SimpleNamespace(
+            sync=SimpleNamespace(running=False),
+            control=SimpleNamespace(set_full_sync_active=lambda _active: None),
+        )
+
+        def raise_tcl_error(*_args, **_kwargs):
+            raise tk.TclError("widget destroyed")
+
+        panel.set_config_enabled = raise_tcl_error
+        panel._set_full_sync_button_active = lambda *_args, **_kwargs: None
+
+        ConfigPanel._finish_full_sync(panel)
 
     def test_cancel_full_sync_requests_cancel_and_disables_button(self):
         calls = []

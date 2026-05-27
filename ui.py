@@ -1152,10 +1152,13 @@ class ConfigPanel(ctk.CTkFrame):
                 pass
 
     def _finish_full_sync(self):
-        enabled = not self.app.sync.running
-        self.set_config_enabled(enabled)
-        self._set_full_sync_button_active(False, enabled=enabled)
-        self.app.control.set_full_sync_active(False)
+        try:
+            enabled = not self.app.sync.running
+            self.set_config_enabled(enabled)
+            self._set_full_sync_button_active(False, enabled=enabled)
+            self.app.control.set_full_sync_active(False)
+        except tk.TclError:
+            pass
 
     def _set_full_sync_button_active(self, active: bool, enabled: bool = True):
         p = current_palette()
@@ -1669,6 +1672,7 @@ class App:
         if getattr(self.sync, "full_sync_active", False):
             self.sync.request_full_sync_cancel()
         self.sync.stop()
+        App._join_full_sync_thread_for_shutdown(self, timeout=2.0)
         if self._single_instance_sock:
             try:
                 self._single_instance_sock.close()
@@ -1686,6 +1690,17 @@ class App:
         try:
             self.window.destroy()
         except tk.TclError:
+            pass
+
+    def _join_full_sync_thread_for_shutdown(self, timeout: float = 2.0):
+        panel = getattr(self, "config_panel", None)
+        thread = getattr(panel, "_full_sync_thread", None)
+        if not thread or thread is threading.current_thread():
+            return
+        try:
+            if thread.is_alive():
+                thread.join(timeout=timeout)
+        except RuntimeError:
             pass
 
     def attach_single_instance_socket(self, sock):
