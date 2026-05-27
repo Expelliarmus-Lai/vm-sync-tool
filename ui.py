@@ -485,7 +485,7 @@ class ControlPanel(ctk.CTkFrame):
 
         self.sync_label = ctk.CTkLabel(
             stats_frame,
-            text="已同步  0",
+            text=f"{LogIcon.UPLOAD} 已同步  0",
             font=ui_font(size=13),
             text_color=p["text_dim"],
             anchor="w",
@@ -494,7 +494,7 @@ class ControlPanel(ctk.CTkFrame):
 
         self.bin_label = ctk.CTkLabel(
             stats_frame,
-            text=".bin    —",
+            text=f"{LogIcon.BIN} .bin    —",
             font=ui_font(size=13),
             text_color=p["text_dim"],
             anchor="w",
@@ -503,7 +503,7 @@ class ControlPanel(ctk.CTkFrame):
 
         self.uptime_label = ctk.CTkLabel(
             stats_frame,
-            text="运行时间  —",
+            text=f"{LogIcon.INFO} 运行时间  —",
             font=ui_font(size=13),
             text_color=p["text_dim"],
             anchor="w",
@@ -579,8 +579,9 @@ class ControlPanel(ctk.CTkFrame):
         self.app._update_status_indicator(False)
         self.app._update_tray_menu()
         self._start_time = None
-        self.uptime_label.configure(text="运行时间  —")
-        self._last_uptime_text = "运行时间  —"
+        stopped_uptime_text = f"{LogIcon.INFO} 运行时间  —"
+        self.uptime_label.configure(text=stopped_uptime_text)
+        self._last_uptime_text = stopped_uptime_text
 
     def set_full_sync_active(self, active: bool):
         self._full_sync_active = active
@@ -598,22 +599,25 @@ class ControlPanel(ctk.CTkFrame):
 
     def update_stats(self, sync_count: int, bin_ready: bool):
         if sync_count != self._last_sync_count:
-            self.sync_label.configure(text=f"已同步  {sync_count}")
+            self.sync_label.configure(text=f"{LogIcon.UPLOAD} 已同步  {sync_count}")
             self._last_sync_count = sync_count
         if bin_ready != self._last_bin_ready:
             if bin_ready:
                 p = current_palette()
-                self.bin_label.configure(text=".bin    就绪 ✓", text_color=p["success"])
+                self.bin_label.configure(
+                    text=f"{LogIcon.FIRMWARE} .bin    就绪",
+                    text_color=p["success"],
+                )
             else:
                 self.bin_label.configure(
-                    text=".bin    —",
+                    text=f"{LogIcon.BIN} .bin    —",
                     text_color=current_palette()["text_dim"],
                 )
             self._last_bin_ready = bin_ready
         if self._start_time:
             elapsed = int(time.time() - self._start_time)
             h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
-            uptime_text = f"运行时间  {h:02d}:{m:02d}:{s:02d}"
+            uptime_text = f"{LogIcon.INFO} 运行时间  {h:02d}:{m:02d}:{s:02d}"
             if uptime_text != self._last_uptime_text:
                 self.uptime_label.configure(text=uptime_text)
                 self._last_uptime_text = uptime_text
@@ -1109,11 +1113,11 @@ class ConfigPanel(ctk.CTkFrame):
         self.update_bin_path_hint(check_guest=report.ok)
         p = current_palette()
         if report.ok and report.warning_text:
-            self.status_label.configure(text="⚠ 已保存，有警告", text_color=p["warning"])
+            self.status_label.configure(text=f"{LogIcon.WARNING} 已保存，有警告", text_color=p["warning"])
         elif report.ok:
-            self.status_label.configure(text="✓ 已保存，检测通过", text_color=p["success"])
+            self.status_label.configure(text=f"{LogIcon.SUCCESS} 已保存，检测通过", text_color=p["success"])
         else:
-            self.status_label.configure(text="✗ 已保存，检测失败", text_color=p["error"])
+            self.status_label.configure(text=f"{LogIcon.ERROR} 已保存，检测失败", text_color=p["error"])
         self.after(2000, lambda: self.status_label.configure(text=""))
         return report
 
@@ -1363,13 +1367,13 @@ class StatusBar(ctk.CTkFrame):
         self.app = app
 
         self.vm_label = ctk.CTkLabel(
-            self, text="● 检查 VM...", font=ui_font(size=11),
+            self, text=f"{LogIcon.CHECK} 检查 VM...", font=ui_font(size=11),
             text_color=current_palette()["text_dim"],
         )
         self.vm_label.pack(side="left", padx=(10, 16))
 
         self.vmrun_label = ctk.CTkLabel(
-            self, text="vmrun —", font=ui_font(size=11),
+            self, text=f"{LogIcon.TOOL} vmrun —", font=ui_font(size=11),
             text_color=current_palette()["text_dim"],
         )
         self.vmrun_label.pack(side="left", padx=(0, 16))
@@ -1451,7 +1455,7 @@ class App:
         title_frame.pack(fill="x", padx=18, pady=(14, 6))
 
         self.status_dot = ctk.CTkLabel(
-            title_frame, text="●", font=ui_font(size=16),
+            title_frame, text=LogIcon.INFO, font=ui_font(size=16),
             text_color=p["text_dim"],
         )
         self.status_dot.pack(side="left", padx=(0, 6))
@@ -1716,10 +1720,10 @@ class App:
     def _update_status_indicator(self, running: bool):
         p = current_palette()
         if running:
-            self.status_dot.configure(text_color=p["success"])
+            self.status_dot.configure(text=LogIcon.START, text_color=p["success"])
             self.status_text.configure(text="运行中", text_color=p["success"])
         else:
-            self.status_dot.configure(text_color=p["text_dim"])
+            self.status_dot.configure(text=LogIcon.STOP, text_color=p["text_dim"])
             self.status_text.configure(text="已停止", text_color=p["text_dim"])
 
     def _check_vm_status(self):
@@ -1730,16 +1734,16 @@ class App:
         if not vmrun:
             self._vmrun_status_state = "unavailable"
             self.status_bar.vmrun_label.configure(
-                text="vmrun 不可用", text_color=p["error"]
+                text=f"{LogIcon.ERROR} vmrun 不可用", text_color=p["error"]
             )
             self.status_bar.vm_label.configure(
-                text="○ VM 状态未知", text_color=p["text_dim"]
+                text=f"{LogIcon.INFO} VM 状态未知", text_color=p["text_dim"]
             )
         else:
             if getattr(self, "_vmrun_status_state", "unknown") == "unknown":
                 self._vmrun_status_state = "checking"
                 self.status_bar.vmrun_label.configure(
-                    text="vmrun 检查中...", text_color=p["text_dim"]
+                    text=f"{LogIcon.CHECK} vmrun 检查中...", text_color=p["text_dim"]
                 )
             if not self._status_check_running:
                 self._status_check_running = True
@@ -1751,7 +1755,7 @@ class App:
 
         interval = self.cm.config.poll_interval_sec
         self.status_bar.poll_label.configure(
-            text=f"轮询间隔 {interval}s"
+            text=f"{LogIcon.BIN} .bin 轮询 {interval}s"
         )
 
         # Re-check every 10 seconds
@@ -1779,29 +1783,33 @@ class App:
 
             if vmx and normalize_vmx_path(vmx) in running:
                 self.status_bar.vm_label.configure(
-                    text="● VM 运行中", text_color=p["success"]
+                    text=f"{LogIcon.SUCCESS} VM 运行中", text_color=p["success"]
                 )
             elif vmx:
                 self.status_bar.vm_label.configure(
-                    text="○ VM 未运行", text_color=p["warning"]
+                    text=f"{LogIcon.WARNING} VM 未运行", text_color=p["warning"]
                 )
             else:
                 self.status_bar.vm_label.configure(
-                    text="○ 未配置 VMX", text_color=p["text_dim"]
+                    text=f"{LogIcon.INFO} 未配置 VMX", text_color=p["text_dim"]
                 )
             self.status_bar.vmrun_label.configure(
-                text="vmrun 就绪", text_color=p["success"]
+                text=f"{LogIcon.SUCCESS} vmrun 就绪", text_color=p["success"]
             )
             self._vmrun_status_state = "ready"
         else:
             is_timeout = "超时" in result.error
             self.status_bar.vmrun_label.configure(
-                text="vmrun 检查超时" if is_timeout else "vmrun 不可用",
+                text=(
+                    f"{LogIcon.WARNING} vmrun 检查超时"
+                    if is_timeout
+                    else f"{LogIcon.ERROR} vmrun 不可用"
+                ),
                 text_color=p["warning"] if is_timeout else p["error"],
             )
             self._vmrun_status_state = "timeout" if is_timeout else "unavailable"
             self.status_bar.vm_label.configure(
-                text="○ VM 状态未知", text_color=p["text_dim"]
+                text=f"{LogIcon.INFO} VM 状态未知", text_color=p["text_dim"]
             )
 
     # ── Event Polling ────────────────────────────────────
