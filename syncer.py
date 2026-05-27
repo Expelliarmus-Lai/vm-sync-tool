@@ -22,6 +22,28 @@ from preflight import PreflightChecker
 _CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 GUEST_CMD = r"C:\Windows\System32\cmd.exe"
 GUEST_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+POST_COPY_TIMESTAMP_DRIFT_SUPPRESS_SEC = 10.0
+
+
+class LogIcon:
+    START = "🚀"
+    STOP = "🛑"
+    CANCEL = "🚫"
+    SUCCESS = "✅"
+    ERROR = "❌"
+    WARNING = "⚠️"
+    INFO = "ℹ️"
+    CHECK = "🔍"
+    CONFIG = "💾"
+    WATCH = "👀"
+    UPLOAD = "📤"
+    DOWNLOAD = "📥"
+    PACKAGE = "📦"
+    TOOL = "🔧"
+    CLEANUP = "🧹"
+    FIRMWARE = "⚡"
+    BIN = "🧾"
+    FILE = "📄"
 
 
 class LogEvent:
@@ -110,11 +132,19 @@ class SyncManager:
         self._observer: Observer | None = None
         self._debouncer: Debouncer | None = None
         self._poller_thread: threading.Thread | None = None
+        self._copy_worker_thread: threading.Thread | None = None
+        self._copy_queue: queue.Queue | None = None
+        self._copy_pending: set[str] = set()
+        self._copy_lock = threading.Lock()
+        self._host_signature_lock = threading.Lock()
+        self._host_file_signatures: dict[str, tuple[int, str]] = {}
         self._running = False
         self._last_bin_mtime = 0
         self._last_bin_signature: tuple[int, str] | None = None
         self._last_bin_state: tuple | None = None
         self._last_bin_unchanged_log_state: tuple | None = None
+        self._last_bin_copied_content_key: tuple[str, str] | None = None
+        self._last_bin_copied_at = 0.0
         self._startup_bin_state: tuple | None = None
         self._startup_bin_content_key: tuple[str, str] | None = None
         self._startup_bin_signature: tuple[str, int, str] | None = None
@@ -128,6 +158,7 @@ class SyncManager:
         self._stop_requested = False
         self._full_sync_cancel = threading.Event()
         self._full_sync_active = False
+        self._incremental_sync_suspended = False
         self._last_bin_missing_log_time = 0.0
         self._synced_count = 0
         self._bin_ready = False
@@ -165,10 +196,13 @@ class SyncManager:
         self._reset_bin_tracking()
         self._defer_startup_bin_baseline()
         self._stop_requested = False
+        self._incremental_sync_suspended = False
+        self._prime_host_file_signatures()
         self._running = True
+        self._start_copy_worker()
         self._start_observer()
         self._start_poller()
-        self._emit("info", "▶", "同步服务已启动")
+        self._emit("info", LogIcon.START, "同步服务已启动")
         return True
 
     def stop(self):
@@ -176,18 +210,20 @@ class SyncManager:
         self._running = False
         if self._debouncer:
             self._debouncer.cancel_all()
+        self._drain_copy_queue()
         if self._observer:
             self._observer.stop()
             self._observer.join(timeout=2)
             self._observer = None
+        self._join_copy_worker_for_stop()
         self._join_poller_for_stop()
         self._clear_guest_state_sidecar(delete=True)
-        self._emit("info", "⏹", "同步服务已停止")
+        self._emit("info", LogIcon.STOP, "同步服务已停止")
 
     def request_full_sync_cancel(self):
         self._full_sync_cancel.set()
         if self._full_sync_active:
-            self._emit("warning", "⏹", "已请求取消全量同步，正在等待当前 VM 文件操作安全收尾")
+            self._emit("warning", LogIcon.CANCEL, "已请求取消全量同步: 正在等待当前 VM 文件操作完成后清理")
             self._emit_progress(0.95, "正在取消全量同步，等待当前操作完成", active=True)
 
     def preflight_snapshot(self) -> tuple:
@@ -225,12 +261,12 @@ class SyncManager:
         if not self._can_reuse_preflight(preflight_checked, preflight_snapshot):
             report = PreflightChecker(self.config.config).check()
             if not report.ok:
-                self._emit("error", "✕", f"路径预检失败:\n{report.error_text}")
+                self._emit("error", LogIcon.ERROR, f"路径预检失败:\n{report.error_text}")
                 return False
         try:
             Path(self.config.config.host_output_path).mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            self._emit("error", "✕", f"无法创建输出目录: {e}")
+            self._emit("error", LogIcon.ERROR, f"无法创建输出目录: {e}。处理方法: 检查路径权限，或手动创建该目录后重试。")
             return False
         if not self._can_resolve_bin_target_for_start():
             return False
@@ -241,6 +277,8 @@ class SyncManager:
         self._last_bin_signature = None
         self._last_bin_state = None
         self._last_bin_unchanged_log_state = None
+        self._last_bin_copied_content_key = None
+        self._last_bin_copied_at = 0.0
         self._startup_bin_state = None
         self._startup_bin_content_key = None
         self._startup_bin_signature = None
@@ -268,7 +306,7 @@ class SyncManager:
         self._startup_bin_content_key = self._bin_state_content_key(state_key)
         self._startup_bin_same_content_copy_pending = True
         self._startup_bin_baseline_pending = False
-        self._emit("info", "i", f"已记录当前 .bin 状态；后续时间更新时会回传，避免漏掉刚启动后的重新编译: {bin_filename}")
+        self._emit("info", LogIcon.BIN, f"已记录当前 .bin 状态: {bin_filename}。后续时间更新或内容变化会触发回传。")
 
     def _record_startup_bin_signature(
         self,
@@ -278,7 +316,7 @@ class SyncManager:
     ):
         self._startup_bin_signature = (vm_bin.lower(), *signature)
         self._startup_bin_baseline_pending = False
-        self._emit("info", "i", f"已记录当前 .bin 内容，后续变化才会回传: {bin_filename}")
+        self._emit("info", LogIcon.BIN, f"已记录当前 .bin 内容: {bin_filename}。后续内容变化会触发回传。")
 
     def _vmrun(self) -> str:
         return self.config.config.vmrun_path
@@ -300,18 +338,18 @@ class SyncManager:
     def _start_observer(self):
         host_root = self.config.config.host_project_path
         if not host_root or not Path(host_root).exists():
-            self._emit("warning", "⚠", f"宿主机工程路径无效: {host_root}")
+            self._emit("warning", LogIcon.WARNING, f"宿主机工程路径无效: {host_root}。处理方法: 检查路径是否存在并重新保存配置。")
             return
 
         self._debouncer = Debouncer(
             self.config.config.debounce_ms,
-            self._do_copy_to_vm,
+            self._enqueue_copy_to_vm,
         )
         handler = ProjectFileHandler(self)
         self._observer = Observer()
         self._observer.schedule(handler, host_root, recursive=True)
         self._observer.start()
-        self._emit("info", "✓", f"监听宿主机工程: {host_root}")
+        self._emit("info", LogIcon.WATCH, f"已开始监听宿主机工程: {host_root}")
 
     def _on_file_changed(self, host_path: str):
         if not self._running:
@@ -320,8 +358,141 @@ class SyncManager:
             return
         self._debouncer.trigger(host_path, host_path)
 
+    def _start_copy_worker(self):
+        self._copy_queue = queue.Queue()
+        self._copy_pending = set()
+        self._copy_worker_thread = threading.Thread(
+            target=self._copy_worker_loop, daemon=True
+        )
+        self._copy_worker_thread.start()
+
+    def _join_copy_worker_for_stop(self):
+        worker = self._copy_worker_thread
+        if not worker:
+            return
+        if worker is threading.current_thread():
+            return
+        worker.join(timeout=1.0)
+        if not worker.is_alive():
+            self._copy_worker_thread = None
+
+    def _enqueue_copy_to_vm(self, host_path: str):
+        if not self._running or self._incremental_sync_suspended:
+            return
+        if not self._copy_queue:
+            return
+        if not self._host_file_content_changed(host_path):
+            return
+        with self._copy_lock:
+            if host_path in self._copy_pending:
+                return
+            self._copy_pending.add(host_path)
+        self._copy_queue.put(host_path)
+
+    def _watched_extensions(self) -> set[str]:
+        return {ext.lower() for ext in self.config.config.watch_extensions}
+
+    def _host_signature_key(self, host_path: str) -> str:
+        try:
+            return str(Path(host_path).resolve()).casefold()
+        except Exception:
+            return str(Path(host_path).absolute()).casefold()
+
+    def _host_file_signature(self, host_path: str) -> tuple[int, str] | None:
+        path = Path(host_path)
+        try:
+            if not path.is_file():
+                return None
+            digest = hashlib.sha256()
+            size = 0
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    size += len(chunk)
+                    digest.update(chunk)
+            return size, digest.hexdigest()
+        except OSError:
+            return None
+
+    def _prime_host_file_signatures(self):
+        root = Path(self.config.config.host_project_path)
+        signatures: dict[str, tuple[int, str]] = {}
+        if root.exists():
+            extensions = self._watched_extensions()
+            for path in root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in extensions:
+                    continue
+                signature = self._host_file_signature(str(path))
+                if signature is not None:
+                    signatures[self._host_signature_key(str(path))] = signature
+        with self._host_signature_lock:
+            self._host_file_signatures = signatures
+
+    def _host_file_content_changed(self, host_path: str) -> bool:
+        signature = self._host_file_signature(host_path)
+        if signature is None:
+            return False
+        key = self._host_signature_key(host_path)
+        with self._host_signature_lock:
+            previous = self._host_file_signatures.get(key)
+            if previous == signature:
+                return False
+            self._host_file_signatures[key] = signature
+        return True
+
+    def _copy_worker_loop(self):
+        while self._running:
+            if self._incremental_sync_suspended:
+                self._drain_copy_queue()
+                return
+            copy_queue = self._copy_queue
+            if not copy_queue:
+                return
+            try:
+                host_path = copy_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            with self._copy_lock:
+                self._copy_pending.discard(host_path)
+            try:
+                if self._running and not self._incremental_sync_suspended:
+                    self._do_copy_to_vm(host_path)
+            finally:
+                try:
+                    copy_queue.task_done()
+                except ValueError:
+                    pass
+
+    def _drain_copy_queue(self):
+        copy_queue = self._copy_queue
+        if copy_queue:
+            while True:
+                try:
+                    copy_queue.get_nowait()
+                    copy_queue.task_done()
+                except queue.Empty:
+                    break
+                except ValueError:
+                    break
+        with self._copy_lock:
+            self._copy_pending.clear()
+
+    def _suspend_incremental_uploads(self, host_path: str):
+        if self._incremental_sync_suspended:
+            return
+        self._incremental_sync_suspended = True
+        self._drain_copy_queue()
+        self._emit(
+            "error",
+            LogIcon.ERROR,
+            "增量同步已暂停: vmrun 执行超时，后续文件未继续上传。"
+            f"出错文件: {Path(host_path).name}。"
+            "处理方法: 先暂停脚本，确认 VM 可操作或重启 VMware Tools，再重新启动同步。",
+        )
+
     def _do_copy_to_vm(self, host_path: str):
         if not self._running:
+            return
+        if self._incremental_sync_suspended:
             return
         try:
             host_root = Path(self.config.config.host_project_path)
@@ -336,12 +507,12 @@ class SyncManager:
                 f".{vm_dest_path.name}.vm_sync_tmp",
             )
 
-            self._emit("info", "↗", f"{rel} → VM")
+            self._emit("info", LogIcon.UPLOAD, f"同步到 VM: {rel}")
 
             mkdir = self._ensure_guest_directory(vm_dir)
             if mkdir.returncode != 0:
                 err = self._vmrun_error(mkdir)
-                self._emit("error", "✗", f"{rel}: 创建 VM 目录失败: {err}")
+                self._emit("error", LogIcon.ERROR, f"创建 VM 目录失败: {rel}。原因: {err}。处理方法: 检查 VM 路径、用户权限和 VMware Tools 状态。")
                 return
 
             result = self._run_vmrun(
@@ -362,20 +533,20 @@ class SyncManager:
                 if move.returncode != 0:
                     err = self._vmrun_error(move)
                     if not self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False):
-                        self._emit("warning", "⚠", f"临时文件清理失败，请手动删除: {vm_tmp}")
-                    self._emit("error", "✗", f"{rel}: 写入 VM 目标失败: {err}")
+                        self._emit("warning", LogIcon.CLEANUP, f"VM 临时文件清理失败: {vm_tmp}。处理方法: 在 VM 中手动删除该文件后重试。")
+                    self._emit("error", LogIcon.ERROR, f"写入 VM 目标失败: {rel}。原因: {err}。处理方法: 检查目标文件是否被占用、VM 权限是否正常。")
                     return
                 self._synced_count += 1
-                self._emit("success", "✓", str(rel))
+                self._emit("success", LogIcon.SUCCESS, f"已同步到 VM: {rel}")
             else:
                 self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
                 err = result.stderr.strip() or "unknown error"
-                self._emit("error", "✗", f"{rel}: {err}")
+                self._emit("error", LogIcon.ERROR, f"同步到 VM 失败: {rel}。原因: {err}。处理方法: 检查 VM 是否运行、VMware Tools 是否正常。")
 
         except subprocess.TimeoutExpired:
-            self._emit("error", "✗", f"vmrun 超时: {Path(host_path).name}")
+            self._suspend_incremental_uploads(host_path)
         except Exception as e:
-            self._emit("error", "✗", f"{Path(host_path).name}: {e}")
+            self._emit("error", LogIcon.ERROR, f"同步文件异常: {Path(host_path).name}。原因: {e}")
 
     # ── Poller (VM → Host, .bin) ───────────────────────────
 
@@ -447,8 +618,8 @@ class SyncManager:
                 if self._startup_bin_same_content_copy_pending:
                     self._emit(
                         "info",
-                        "i",
-                        f"检测到首次记录后时间已更新，内容未变化也回传一次: {bin_filename}",
+                        LogIcon.BIN,
+                        f"检测到首次记录后 .bin 时间已更新: {bin_filename}。内容未变化，本次仍回传一次。",
                     )
                     self._startup_bin_state = None
                     self._startup_bin_content_key = None
@@ -466,6 +637,10 @@ class SyncManager:
                 self._startup_bin_state = None
                 self._startup_bin_content_key = None
             if state_key == self._last_bin_state and host_out.exists():
+                self._bin_ready = True
+                return
+            if self._is_recent_post_copy_timestamp_drift(state_key):
+                self._last_bin_state = state_key
                 self._bin_ready = True
                 return
             if self._guest_bin_content_is_unchanged(state_key, host_out):
@@ -535,18 +710,20 @@ class SyncManager:
             self._last_bin_signature = signature
             if state_key is not None:
                 self._last_bin_state = state_key
+                self._last_bin_copied_content_key = self._bin_state_content_key(state_key)
+                self._last_bin_copied_at = time.time()
             self._bin_ready = True
             self._emit(
-                "success", "🔥",
-                f"{bin_filename} → {self.config.config.host_output_path}"
+                "success", LogIcon.DOWNLOAD,
+                f"已回传固件: {bin_filename} → {self.config.config.host_output_path}"
             )
-            self._emit("info", "⚡", "固件已就绪，可烧录")
+            self._emit("info", LogIcon.FIRMWARE, "固件已就绪，可烧录")
             # Trigger tray notification
             self.event_queue.put(("bin_ready", bin_filename))
         else:
             tmp_path.unlink(missing_ok=True)
             err = self._vmrun_error(result)
-            self._emit("error", "✗", f"拉取 .bin 失败: {err}")
+            self._emit("error", LogIcon.ERROR, f"拉取 .bin 失败: {err}。处理方法: 检查 VM 内 .bin 路径、用户权限和 VMware Tools 状态。")
 
     def _bin_state_content_key(self, state_key: tuple) -> tuple[str, str] | None:
         if len(state_key) < 4:
@@ -586,6 +763,16 @@ class SyncManager:
             and state_key[-1] == self._last_bin_state[-1]
         )
 
+    def _is_recent_post_copy_timestamp_drift(self, state_key: tuple) -> bool:
+        content_key = self._bin_state_content_key(state_key)
+        if not content_key or content_key != self._last_bin_copied_content_key:
+            return False
+        if not self._last_bin_copied_at:
+            return False
+        if time.time() - self._last_bin_copied_at > POST_COPY_TIMESTAMP_DRIFT_SUPPRESS_SEC:
+            return False
+        return True
+
     def _log_bin_content_unchanged_once(self, log_key: tuple, bin_filename: str):
         if self._stop_requested:
             return
@@ -593,8 +780,8 @@ class SyncManager:
             return
         self._emit(
             "info",
-            "ℹ",
-            f"检测到 {bin_filename} 更新，但内容未变化，已跳过覆盖",
+            LogIcon.INFO,
+            f"检测到 .bin 时间更新但内容未变化: {bin_filename}。已跳过覆盖。",
         )
         self.event_queue.put(("bin_unchanged", bin_filename))
         self._last_bin_unchanged_log_state = log_key
@@ -689,7 +876,7 @@ class SyncManager:
             if emit:
                 self._emit(
                     "info",
-                    "i",
+                    LogIcon.BIN,
                     f"已自动选择唯一 .bin 文件: {self._guest_relative_to_project(resolved_path)}",
                 )
             return BinTargetCheck(
@@ -770,13 +957,13 @@ class SyncManager:
     def _emit_bin_warning(self, message: str):
         now = time.time()
         if now - self._last_bin_missing_log_time > 30:
-            self._emit("warning", "⚠", message)
+            self._emit("warning", LogIcon.WARNING, message)
             self._last_bin_missing_log_time = now
 
     def _emit_bin_error(self, message: str):
         now = time.time()
         if now - self._last_bin_missing_log_time > 30:
-            self._emit("error", "✗", message)
+            self._emit("error", LogIcon.ERROR, message)
             self._last_bin_missing_log_time = now
 
     def _get_guest_file_state(self, vm_path: str, vmx: str) -> tuple[int, int, str] | None:
@@ -1015,7 +1202,7 @@ class SyncManager:
         ))
 
     def _fail_full_sync(self, message: str) -> int:
-        self._emit("error", "✗", message)
+        self._emit("error", LogIcon.ERROR, message)
         self._emit_progress(1.0, f"全量同步失败: {message}", active=False)
         return 0
 
@@ -1107,10 +1294,10 @@ class SyncManager:
                 continue
             seen.add(path)
             if not self._cleanup_guest_path(vmx, path, is_dir):
-                self._emit("warning", "⚠", f"清理失败，请手动删除: {path}")
+                self._emit("warning", LogIcon.CLEANUP, f"VM 临时路径清理失败: {path}。处理方法: 在 VM 中手动删除该路径。")
 
     def _cancel_full_sync(self, message: str) -> int:
-        self._emit("warning", "⏹", message)
+        self._emit("warning", LogIcon.CANCEL, f"全量同步已取消: {message}")
         self._emit_progress(1.0, f"全量同步已取消: {message}", active=False)
         return 0
 
@@ -1135,45 +1322,45 @@ class SyncManager:
 
         try:
             if not cfg.vmx_path:
-                self._emit("error", "✗", "请先配置 VMX 路径")
+                self._emit("error", LogIcon.ERROR, "缺少 VMX 路径。处理方法: 在配置栏选择目标虚拟机的 .vmx 文件。")
                 return 0
             if not cfg.host_project_path:
-                self._emit("error", "✗", "请先配置宿主机工程路径")
+                self._emit("error", LogIcon.ERROR, "缺少宿主机工程路径。处理方法: 在配置栏选择宿主机 Keil 工程目录。")
                 return 0
             if not cfg.vm_project_path:
-                self._emit("error", "✗", "请先配置 VM 工程路径")
+                self._emit("error", LogIcon.ERROR, "缺少 VM 工程路径。处理方法: 填写虚拟机内的工程目录。")
                 return 0
             if not self._has_guest_credentials():
                 return self._fail_full_sync(
-                    "请先配置 VM 用户名和密码；空密码可能触发 VMware VIX 异常弹窗或卡死"
+                    "缺少 VM 用户名或密码。处理方法: 在配置栏填写虚拟机 Windows 用户名和密码；不要使用空密码。"
                 )
 
             host_root = Path(cfg.host_project_path)
             if not host_root.exists():
-                self._emit("error", "✗", "宿主机工程路径不存在，无法全量同步")
+                self._emit("error", LogIcon.ERROR, "宿主机工程路径不存在，无法全量同步。处理方法: 检查路径后重新保存配置。")
                 return 0
 
             files = self._syncable_files(host_root)
             total = len(files)
             if total == 0:
-                self._emit("warning", "⚠", "没有找到需要同步的文件")
+                self._emit("warning", LogIcon.WARNING, "没有找到需要同步的文件。处理方法: 检查宿主机工程目录是否为空。")
                 self._emit_progress(1.0, "没有需要同步的文件", active=False)
                 return 0
 
-            self._emit("info", "🔧", f"全量同步开始，准备打包 {total} 个文件")
+            self._emit("info", LogIcon.TOOL, f"全量同步开始: 准备打包 {total} 个文件")
             self._emit_progress(0.0, "准备文件列表")
             self._emit_progress(0.15, "正在压缩工程文件")
             zip_path = self._create_full_sync_zip(host_root, files)
             zip_size_mb = Path(zip_path).stat().st_size / (1024 * 1024)
-            self._emit("info", "📦", f"压缩包已生成 ({zip_size_mb:.1f} MB)")
+            self._emit("info", LogIcon.PACKAGE, f"压缩包已生成: {zip_size_mb:.1f} MB")
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("已在上传前取消")
+                return self._cancel_full_sync("上传前收到取消请求，未上传压缩包，未修改 VM 工程目录。")
 
             self._emit_progress(0.35, "正在创建 VM 目标目录")
             mkdir = self._ensure_guest_directory(cfg.vm_project_path)
             if mkdir.returncode != 0:
                 err = self._vmrun_error(mkdir)
-                return self._fail_full_sync(f"创建 VM 目录失败: {err}")
+                return self._fail_full_sync(f"创建 VM 工程目录失败: {err}。处理方法: 检查 VM 工程路径、用户权限和 VMware Tools 状态。")
 
             temp_marker = self._create_guest_tempfile(cfg.vmx_path)
             if temp_marker:
@@ -1204,17 +1391,17 @@ class SyncManager:
             )
             if upload.returncode != 0:
                 err = self._vmrun_error(upload)
-                return self._fail_full_sync(f"上传压缩包失败: {err}")
+                return self._fail_full_sync(f"上传压缩包到 VM 失败: {err}。处理方法: 检查 VM 是否运行、VMware Tools 是否正常，并确认 VM 临时目录可写。")
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("已在上传后取消，正在清理临时文件")
+                return self._cancel_full_sync("上传后收到取消请求，已停止解压和覆盖，正在清理 VM 临时文件。")
 
             self._emit_progress(0.65, "正在创建 VM 临时解压目录")
             stage_dir = self._ensure_guest_directory(guest_stage_dir)
             if stage_dir.returncode != 0:
                 err = self._vmrun_error(stage_dir)
-                return self._fail_full_sync(f"创建 VM 临时解压目录失败: {err}")
+                return self._fail_full_sync(f"创建 VM 临时解压目录失败: {err}。处理方法: 检查 VM 临时目录权限，或重启 VMware Tools 后重试。")
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("已在解压前取消，正在清理临时文件")
+                return self._cancel_full_sync("解压前收到取消请求，未覆盖 VM 工程目录，正在清理 VM 临时文件。")
 
             self._emit_progress(0.75, "正在 VM 临时目录内解压")
             extract_script = (
@@ -1232,9 +1419,9 @@ class SyncManager:
             )
             if extract.returncode != 0:
                 err = self._vmrun_error(extract)
-                return self._fail_full_sync(f"VM 内解压失败: {err}")
+                return self._fail_full_sync(f"VM 内解压失败: {err}。处理方法: 检查 VM 磁盘空间、PowerShell Expand-Archive 是否可用。")
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("已在覆盖前取消，目标工程未被覆盖")
+                return self._cancel_full_sync("覆盖前收到取消请求，目标工程未被覆盖，正在清理 VM 临时文件。")
 
             self._emit_progress(0.86, "正在覆盖 VM 工程目录")
             cover_script = (
@@ -1253,9 +1440,9 @@ class SyncManager:
             )
             if cover.returncode != 0:
                 err = self._vmrun_error(cover)
-                return self._fail_full_sync(f"VM 工程覆盖失败: {err}")
+                return self._fail_full_sync(f"VM 工程覆盖失败: {err}。处理方法: 检查目标文件是否被 Keil 或其他程序占用，关闭占用程序后重试。")
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("取消请求在覆盖阶段完成后生效，已完成当前覆盖并开始清理")
+                return self._cancel_full_sync("覆盖阶段收到取消请求，当前覆盖已完成，正在清理临时文件。")
 
             self._emit_progress(0.92, "正在清理临时文件")
             self._cleanup_full_sync_guest_paths(cfg.vmx_path, guest_cleanup)
@@ -1263,10 +1450,10 @@ class SyncManager:
 
             self._synced_count += total
             self._emit_progress(1.0, f"全量同步完成 ({total}/{total})", active=False)
-            self._emit("success", "✓", f"全量同步完成 ({total}/{total})")
+            self._emit("success", LogIcon.SUCCESS, f"全量同步完成: 已同步 {total} 个文件")
             return total
         except subprocess.TimeoutExpired as e:
-            return self._fail_full_sync(f"全量同步超时: {e}")
+            return self._fail_full_sync(f"全量同步超时: {e}。处理方法: 检查 VM 是否卡住，必要时重启 VMware Tools 后重试。")
         except Exception as e:
             return self._fail_full_sync(str(e))
         finally:

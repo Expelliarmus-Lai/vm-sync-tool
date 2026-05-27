@@ -1,6 +1,6 @@
 import unittest
 
-from syncer import LogEvent
+from syncer import LogIcon, LogEvent
 from ui import LogPanel
 
 
@@ -41,9 +41,9 @@ class LogPanelColorTests(unittest.TestCase):
         panel.textbox = FakeTextbox()
         panel._line_count = 0
 
-        panel.append(LogEvent("✓", "ok", "success"))
-        panel.append(LogEvent("✗", "bad", "error"))
-        panel.append(LogEvent("⚠", "warn", "warning"))
+        panel.append(LogEvent(LogIcon.SUCCESS, "ok", "success"))
+        panel.append(LogEvent(LogIcon.ERROR, "bad", "error"))
+        panel.append(LogEvent(LogIcon.WARNING, "warn", "warning"))
 
         message_tags = [
             tag

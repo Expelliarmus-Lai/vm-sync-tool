@@ -1,3 +1,7 @@
+import hashlib
+import inspect
+import queue
+import subprocess
 import tempfile
 import time
 import unittest
@@ -8,6 +12,7 @@ from unittest.mock import patch
 from config_manager import ConfigManager
 from preflight import PreflightReport
 from syncer import SyncManager
+import syncer
 
 
 class Completed:
@@ -18,6 +23,22 @@ class Completed:
 
 
 class SyncManagerTests(unittest.TestCase):
+    def test_syncer_log_emit_calls_use_emoji_icons(self):
+        source = inspect.getsource(syncer.SyncManager)
+        legacy_icons = ('"⏹"', '"✕"', '"✗"', '"✓"', '"ℹ"', '"↗"', '"▶"')
+
+        for icon in legacy_icons:
+            self.assertNotIn(icon, source)
+
+    def test_full_sync_cancel_log_uses_cancel_emoji(self):
+        manager, _cm = self._manager()
+
+        manager._cancel_full_sync("已在上传前取消")
+
+        _event_type, event = manager.event_queue.get_nowait()
+        self.assertEqual("🚫", event.icon)
+        self.assertEqual("warning", event.level)
+
     def _manager(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -283,7 +304,8 @@ class SyncManagerTests(unittest.TestCase):
                 (638838144000000000, 10, "b" * 64),
             ]
             with patch("syncer.subprocess.run", side_effect=fake_run), \
-                    patch.object(manager, "_get_guest_file_state", side_effect=states):
+                    patch.object(manager, "_get_guest_file_state", side_effect=states), \
+                    patch("syncer.time.time", side_effect=[100.0, 120.0]):
                 manager._check_bin()
                 manager._check_bin()
 
@@ -384,7 +406,7 @@ class SyncManagerTests(unittest.TestCase):
                 event_type, data = manager.event_queue.get_nowait()
                 if event_type == "log":
                     logs.append(data.message)
-            self.assertTrue(any("首次记录后时间已更新" in message for message in logs))
+            self.assertTrue(any("首次记录后 .bin 时间已更新" in message for message in logs))
 
     def test_start_uses_temp_signature_baseline_when_guest_state_is_unavailable(self):
         manager, cm = self._manager()
@@ -451,7 +473,8 @@ class SyncManagerTests(unittest.TestCase):
                 (638838144000100000, 11, "a" * 64),
             ]
             with patch("syncer.subprocess.run", side_effect=fake_run), \
-                    patch.object(manager, "_get_guest_file_state", side_effect=states):
+                    patch.object(manager, "_get_guest_file_state", side_effect=states), \
+                    patch("syncer.time.time", side_effect=[100.0, 120.0]):
                 manager._check_bin()
                 manager._check_bin()
 
@@ -464,8 +487,57 @@ class SyncManagerTests(unittest.TestCase):
                     logs.append(data.message)
                 if event_type == "bin_unchanged":
                     unchanged_events.append(data)
-            self.assertTrue(any("内容未变化" in message for message in logs))
+            self.assertTrue(any("firmware.bin" in message for message in logs))
             self.assertEqual(["firmware.bin"], unchanged_events)
+
+    def test_recent_post_copy_timestamp_drift_is_suppressed(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+
+            copies = []
+
+            def fake_run(cmd, **_kwargs):
+                if "fileExistsInGuest" in cmd:
+                    return Completed(stdout="The file exists.", returncode=0)
+                if "CopyFileFromGuestToHost" in cmd:
+                    copies.append(cmd)
+                    Path(cmd[-1]).write_bytes(b"firmware-v1")
+                    return Completed(returncode=0)
+                return Completed(returncode=0)
+
+            digest = hashlib.sha256(b"firmware-v1").hexdigest()
+            states = [
+                (638838144000000000, 11, digest),
+                (638838144000200000, 11, digest),
+            ]
+            with patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(manager, "_get_guest_file_state", side_effect=states), \
+                    patch("syncer.time.time", side_effect=[100.0, 104.0]):
+                manager._check_bin()
+                manager._check_bin()
+
+            self.assertEqual(1, len(copies))
+            self.assertEqual(
+                (r"c:\project\output\firmware.bin", 638838144000200000, 11, digest),
+                manager._last_bin_state,
+            )
+            logs = []
+            unchanged_events = []
+            while not manager.event_queue.empty():
+                event_type, data = manager.event_queue.get_nowait()
+                if event_type == "log":
+                    logs.append(data.message)
+                if event_type == "bin_unchanged":
+                    unchanged_events.append(data)
+            self.assertFalse(any("内容未变化" in message for message in logs))
+            self.assertEqual([], unchanged_events)
 
     def test_stop_suppresses_late_unchanged_bin_update_events(self):
         manager, _cm = self._manager()
@@ -968,6 +1040,128 @@ class SyncManagerTests(unittest.TestCase):
             time.sleep((cm.config.debounce_ms / 1000.0) + 0.2)
 
         self.assertEqual([], fired)
+
+    def test_incremental_changes_are_enqueued_for_single_worker(self):
+        queued = []
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            cm.config.host_project_path = host
+            cm.config.vmx_path = r"C:\vm\machine.vmx"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            with patch.object(manager, "_can_start", return_value=True), \
+                    patch.object(manager, "_start_poller"), \
+                    patch.object(manager, "_start_copy_worker") as start_worker:
+                self.assertTrue(manager.start())
+
+            manager._debouncer.callback = lambda path: queued.append(path)
+            first = str(Path(host) / "main.c")
+            second = str(Path(host) / "util.c")
+            manager._on_file_changed(first)
+            manager._on_file_changed(second)
+            time.sleep((cm.config.debounce_ms / 1000.0) + 0.2)
+            manager.stop()
+
+        start_worker.assert_called_once()
+        self.assertCountEqual([first, second], queued)
+
+    def test_incremental_event_without_content_change_is_not_enqueued(self):
+        queued = []
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            host_file = host_root / "Src" / "main.c"
+            host_file.parent.mkdir()
+            host_file.write_text("int main(void) { return 0; }", encoding="utf-8")
+            cm.config.host_project_path = host
+            cm.config.vmx_path = r"C:\vm\machine.vmx"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            with patch.object(manager, "_can_start", return_value=True), \
+                    patch.object(manager, "_start_poller"), \
+                    patch.object(manager, "_start_copy_worker"):
+                self.assertTrue(manager.start())
+
+            manager._copy_queue = queue.Queue()
+            manager._on_file_changed(str(host_file))
+            time.sleep((cm.config.debounce_ms / 1000.0) + 0.2)
+            while not manager._copy_queue.empty():
+                queued.append(manager._copy_queue.get_nowait())
+            manager.stop()
+
+        self.assertEqual([], queued)
+
+    def test_incremental_event_with_content_change_is_enqueued_once(self):
+        queued = []
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            host_file = host_root / "Src" / "main.c"
+            host_file.parent.mkdir()
+            host_file.write_text("int main(void) { return 0; }", encoding="utf-8")
+            cm.config.host_project_path = host
+            cm.config.vmx_path = r"C:\vm\machine.vmx"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            with patch.object(manager, "_can_start", return_value=True), \
+                    patch.object(manager, "_start_poller"), \
+                    patch.object(manager, "_start_copy_worker"):
+                self.assertTrue(manager.start())
+
+            manager._copy_queue = queue.Queue()
+            host_file.write_text("int main(void) { return 1; }", encoding="utf-8")
+            manager._on_file_changed(str(host_file))
+            manager._on_file_changed(str(host_file))
+            time.sleep((cm.config.debounce_ms / 1000.0) + 0.2)
+            while not manager._copy_queue.empty():
+                queued.append(manager._copy_queue.get_nowait())
+            manager.stop()
+
+        self.assertEqual([str(host_file)], queued)
+
+    def test_incremental_timeout_suspends_uploads_and_clears_queue(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            first = host_root / "Src" / "main.c"
+            second = host_root / "Src" / "util.c"
+            first.parent.mkdir()
+            first.write_text("int main(void) { return 0; }", encoding="utf-8")
+            second.write_text("int util(void) { return 0; }", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.host_project_path = host
+            cm.config.vm_project_path = r"C:\project"
+
+            commands = []
+
+            def fake_run(cmd, **_kwargs):
+                commands.append(cmd)
+                raise subprocess.TimeoutExpired(cmd, 15)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run):
+                manager._running = True
+                manager._copy_queue = queue.Queue()
+                manager._copy_pending = {str(first), str(second)}
+                manager._copy_queue.put(str(first))
+                manager._copy_queue.put(str(second))
+                manager._copy_worker_loop()
+
+        self.assertTrue(manager._incremental_sync_suspended)
+        self.assertEqual(1, len(commands))
+        self.assertEqual(set(), manager._copy_pending)
+        self.assertTrue(manager._copy_queue.empty())
+        logs = []
+        while not manager.event_queue.empty():
+            event_type, data = manager.event_queue.get_nowait()
+            if event_type == "log":
+                logs.append(data.message)
+        self.assertTrue(any("增量同步已暂停" in message for message in logs))
 
     def test_incremental_copy_uses_guest_temp_then_move(self):
         manager, cm = self._manager()

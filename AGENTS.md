@@ -253,8 +253,11 @@ dist\VM Sync\
 - Start first saves the current UI config, logs the `config.json` save path, and starts only after preflight and `.bin` target validation pass.
 - Watches `host_project_path` recursively.
 - Debounces changes by `debounce_ms`.
+- Debounced host changes are enqueued and processed by one incremental copy worker. Do not run many Host-to-VM `vmrun` copies concurrently; VIX can become unstable and show VMware Workstation error dialogs.
+- On start, the app builds a host-side content signature baseline for watched files. A later file event is uploaded only if the on-disk file content hash changes; timestamp-only/editor probe events are ignored so unsaved VS Code edits are not pushed to the VM.
 - Copies only files whose suffix is in `watch_extensions`.
 - Copies each changed file to a temp file in the target VM directory first, then moves it over the final path with guest PowerShell. If the final move fails, it attempts to delete the temp file and logs any leftover path.
+- If an incremental `vmrun` upload times out, Host-to-VM incremental uploads are suspended and the pending upload queue is cleared. The service logs one actionable error and waits for the user to pause/start again after checking VM/VMware Tools health.
 - Uses the configured `vmrun_path`; there is no hard-coded business-path entry point.
 - All subprocess calls must include `creationflags=subprocess.CREATE_NO_WINDOW` to prevent flashing CMD windows.
 
@@ -268,6 +271,7 @@ dist\VM Sync\
 - The guest file state is `(LastWriteTimeUtc.Ticks, Length, SHA256)`.
 - On the first poll after service start, an existing VM `.bin` becomes the baseline and is ignored until it changes after startup.
 - The baseline log should explain that users should compile after start. The first post-baseline timestamp update with identical content is still returned once, then later identical-content updates are skipped as usual.
+- After a `.bin` is successfully copied back, a short post-copy timestamp drift window suppresses same-hash timestamp-only notifications. This avoids noisy "content unchanged" logs caused by VM filesystem or copy timing immediately after a real return.
 - If guest file state cannot be read while establishing the startup baseline, the app copies the existing VM `.bin` to a host temp file only to calculate a signature; it still does not overwrite `host_output_path`.
 - If the timestamp changes but the content hash is identical, the app logs one skipped overwrite for that file state and shows a host/tray notification.
 - After `stop()` is requested, in-flight `.bin` checks must not emit late skip logs/notifications or copy guest files back to the host.
@@ -308,6 +312,7 @@ UI notes:
 - Event polling is capped by `App.EVENTS_PER_TICK = 40`.
 - Stats labels should only update when displayed values change.
 - Log text color is per log line/event. A red or green message must not recolor previous messages.
+- Log event icons should use the semantic emoji constants in `LogIcon` instead of ad hoc symbols such as `✓`, `✗`, or `⏹`. Log wording should be concise and consistent: state what happened, include the relevant path/object when useful, and give a concrete recovery action for warnings/errors.
 - Config inputs are disabled while sync/full-sync is running.
 
 ## Window and Tray Lifecycle

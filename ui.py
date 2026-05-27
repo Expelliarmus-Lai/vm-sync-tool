@@ -15,7 +15,7 @@ import pystray
 
 from config_manager import ConfigManager
 from preflight import PreflightChecker, PreflightReport
-from syncer import SyncManager, LogEvent
+from syncer import LogIcon, SyncManager, LogEvent
 from vmrun_resolver import list_running_vms, normalize_vmx_path, resolve_vmrun_path
 
 
@@ -536,14 +536,14 @@ class ControlPanel(ctk.CTkFrame):
             self._set_running()
         else:
             message = f"启动同步失败: {error}" if error else "启动同步失败，请查看上方错误并修正配置"
-            self.app.log_panel.append(LogEvent("✗", message, "error"))
+            self.app.log_panel.append(LogEvent(LogIcon.ERROR, message, "error"))
             self._set_stopped()
 
     def _pause(self):
         try:
             self.app.sync.stop()
         except Exception as e:
-            self.app.log_panel.append(LogEvent("✗", f"暂停同步失败: {e}", "error"))
+            self.app.log_panel.append(LogEvent(LogIcon.ERROR, f"暂停同步失败: {e}。处理方法: 查看同步状态，必要时退出程序后重新启动。", "error"))
         self._set_stopped()
 
     def _set_running(self):
@@ -834,7 +834,7 @@ class ConfigPanel(ctk.CTkFrame):
         if emit_log and hasattr(self.app, "log_panel"):
             self.app.log_panel.append(
                 LogEvent(
-                    "✓",
+                    LogIcon.CONFIG,
                     f"路径已保存至 config.json 文件: {self.app.cm.config_path}",
                     "success",
                 )
@@ -908,7 +908,7 @@ class ConfigPanel(ctk.CTkFrame):
         if hasattr(self.app, "log_panel"):
             self.app.log_panel.append(
                 LogEvent(
-                    "✓",
+                    LogIcon.BIN,
                     f"已自动补全 .bin 相对路径并保存至 config.json 文件: {rel_path}",
                     "success",
                 )
@@ -953,7 +953,7 @@ class ConfigPanel(ctk.CTkFrame):
             f"{details}\n\n确认执行全量同步吗？",
             parent=self.app.window,
         ):
-            self.app.log_panel.append(LogEvent("ℹ", "已取消全量同步", "info"))
+            self.app.log_panel.append(LogEvent(LogIcon.CANCEL, "已取消全量同步: 用户未确认执行，未修改 VM 工程目录。", "info"))
             return
         self.set_config_enabled(False)
         self.app.control.set_full_sync_active(True)
@@ -1679,7 +1679,7 @@ class App:
                 and now - self._last_preflight_error_time < 10
             )
             if not is_repeat:
-                self.log_panel.append(LogEvent("✗", f"路径预检失败:\n{report.error_text}", "error"))
+                self.log_panel.append(LogEvent(LogIcon.ERROR, f"路径预检失败:\n{report.error_text}", "error"))
                 self._last_preflight_error = report.error_text
                 self._last_preflight_error_time = now
             if show_dialog:
@@ -1691,7 +1691,7 @@ class App:
             return report
 
         if report.warning_text:
-            self.log_panel.append(LogEvent("⚠", f"路径预检警告:\n{report.warning_text}", "warning"))
+            self.log_panel.append(LogEvent(LogIcon.WARNING, f"路径预检警告:\n{report.warning_text}", "warning"))
             if show_dialog:
                 messagebox.showwarning(
                     "路径预检警告",
@@ -1699,7 +1699,7 @@ class App:
                     parent=self.window,
                 )
         else:
-            self.log_panel.append(LogEvent("✓", "路径预检通过", "success"))
+            self.log_panel.append(LogEvent(LogIcon.SUCCESS, "路径预检通过", "success"))
         self._last_preflight_error = ""
         self._last_preflight_error_time = 0.0
         return report
