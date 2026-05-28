@@ -156,3 +156,7 @@ dist\VM Sync\
 ## 仓库维护
 
 本地运行配置和构建产物已通过 `.gitignore` 排除，包括 `config.json`、`dist/`、`build/`、`__pycache__/` 和 `vmrun_probe_result.txt`。`config.example.json` 是保留在仓库中的安全配置模板。
+
+## 许可
+
+本项目使用 [MIT License](LICENSE)。

@@ -156,3 +156,7 @@ Distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, be
 ## Repository Maintenance
 
 Local runtime configuration and build outputs are excluded by `.gitignore`, including `config.json`, `dist/`, `build/`, `__pycache__/`, and `vmrun_probe_result.txt`. `config.example.json` is the safe configuration template that remains in the repository.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
