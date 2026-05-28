@@ -249,6 +249,19 @@ class PreflightCheckerTests(unittest.TestCase):
         self.assertIn("VMware", report.error_text)
         self.assertIn("重启", report.error_text)
 
+    def test_english_preflight_messages_and_summary(self):
+        host_root = self._valid_project()
+        cfg = self._config(host_root)
+        cfg.language = "en"
+        cfg.vmrun_path = ""
+
+        report = self._check(cfg, for_full_sync=True)
+
+        self.assertFalse(report.ok)
+        self.assertIn("Configure the vmrun.exe path first", report.error_text)
+        self.assertIn("Will sync 5 files", report.summary)
+        self.assertIn("Source:", report.summary)
+
 
 if __name__ == "__main__":
     unittest.main()

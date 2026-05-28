@@ -62,9 +62,14 @@ def main():
     if not check_single_instance():
         if not notify_existing_instance():
             import tkinter.messagebox as mb
+            from config_manager import ConfigManager
+            from i18n import Translator
+
+            config_manager = ConfigManager(str(TOOL_DIR / "config.json"))
+            t = Translator(config_manager.config.language).tr
             mb.showwarning(
                 "VM Sync",
-                "VM Sync 已在运行中\n\n请查看系统托盘图标或任务栏",
+                t("app.already_running"),
             )
         sys.exit(0)
 

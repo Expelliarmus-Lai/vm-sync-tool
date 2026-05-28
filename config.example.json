@@ -7,6 +7,7 @@
   "vm_project_path": "",
   "vm_bin_relative_path": "",
   "host_output_path": "",
+  "language": "",
   "debounce_ms": 500,
   "poll_interval_sec": 1,
   "watch_extensions": [

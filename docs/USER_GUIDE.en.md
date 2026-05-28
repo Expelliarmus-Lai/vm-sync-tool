@@ -37,6 +37,8 @@ On first run, the application creates `config.json` in the same directory as `VM
 
 `config.example.json` is a public template that shows the config file format. The application actually reads from and writes to `config.json`.
 
+A compact `中 / EN` language switch is available in the upper-right of the window. First launch prefers the Windows display/UI language; after you switch manually, the choice is saved to `config.json` and reused next time.
+
 ## Configuration Fields
 
 After opening the application, fill in the configuration panel and click "保存并检测" (Save and Check).

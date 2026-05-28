@@ -43,6 +43,7 @@ class SyncManagerTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         cm = ConfigManager(str(Path(tmp.name) / "config.json"))
+        cm.config.language = "zh"
         return SyncManager(cm), cm
 
     def test_guest_mtime_returns_none_when_dir_output_cannot_be_parsed(self):

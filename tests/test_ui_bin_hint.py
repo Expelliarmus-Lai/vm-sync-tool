@@ -74,6 +74,7 @@ class ConfigPanelBinHintTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         cm = ConfigManager(str(Path(tmp.name) / "config.json"))
+        cm.config.language = "zh"
         cm.config.vm_project_path = r"C:\Users\h\Desktop\project"
         cm.config.vm_bin_relative_path = bin_rel
         panel = object.__new__(ConfigPanel)

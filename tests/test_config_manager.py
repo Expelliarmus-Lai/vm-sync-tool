@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from config_manager import ConfigManager
 from config_manager import Config
@@ -95,6 +96,30 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
             cm.save()
 
         self.assertEqual(r"C:\Output\firmware.bin", cm.config.vm_bin_relative_path)
+
+    def test_load_adds_detected_language_to_legacy_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+
+            with patch("config_manager.detect_system_language", return_value="en"):
+                cm = ConfigManager(str(config_path))
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("en", cm.config.language)
+        self.assertEqual("en", data["language"])
+
+    def test_invalid_language_falls_back_to_detected_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({"language": "fr"}), encoding="utf-8")
+
+            with patch("config_manager.detect_system_language", return_value="zh"):
+                cm = ConfigManager(str(config_path))
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("zh", cm.config.language)
+        self.assertEqual("zh", data["language"])
 
 
 if __name__ == "__main__":

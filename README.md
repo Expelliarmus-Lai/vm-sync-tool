@@ -28,6 +28,7 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Works
 - 保存配置会在日志中提示路径已保存至 `config.json` 文件。
 - `.bin` 时间戳变化但内容未变化时会跳过覆盖，并通过托盘通知提示。
 - 全量同步期间配置栏和启动按钮会置灰，全量同步按钮会切换为“取消全量同步”，取消会等待当前 VM 操作安全收尾并清理临时文件。
+- 支持中英文界面切换，首次启动优先读取 Windows 显示/UI 语言，手动切换后会记住选择。
 - 支持系统托盘运行，窗口隐藏后同步服务可继续工作。
 - 退出程序时停止同步线程并清理临时 VM 状态文件。
 
@@ -44,7 +45,7 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Works
 
 ## 使用入口
 
-普通使用者请下载发行包：[VM-Sync-v1.0.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.0.0/VM-Sync-v1.0.0.zip)。
+普通使用者请下载发行包：[VM-Sync-v1.1.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.1.0/VM-Sync-v1.1.0.zip)。
 
 也可以打开 [GitHub Releases](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/latest) 查看最新版本。发行包结构如下：
 
@@ -157,9 +158,10 @@ powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 
 ```text
 dist\VM Sync\
+dist\VM-Sync-v1.1.0.zip
 ```
 
-发布时应分发整个 `VM Sync` 文件夹，不能只分发单独的 `VM Sync.exe`，因为 exe 依赖旁边的 `_internal` 目录。
+发布时应分发 `VM-Sync-v1.1.0.zip`，或分发整个 `VM Sync` 文件夹；不能只分发单独的 `VM Sync.exe`，因为 exe 依赖旁边的 `_internal` 目录。
 
 ## 仓库维护
 

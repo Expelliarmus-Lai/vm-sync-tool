@@ -6,6 +6,9 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List
 
+from i18n import detect_system_language, normalize_language
+from i18n import Translator
+
 
 @dataclass
 class Config:
@@ -17,6 +20,7 @@ class Config:
     vm_project_path: str = ""
     vm_bin_relative_path: str = ""
     host_output_path: str = ""
+    language: str = ""
     debounce_ms: int = 500
     poll_interval_sec: int = 1
     watch_extensions: List[str] = field(
@@ -32,6 +36,9 @@ class ConfigManager:
         self.config_path = Path(config_path)
         self.config = Config()
         self._load()
+        changed = self.normalize_runtime_defaults()
+        if changed and self.config_path.exists():
+            self._save()
 
     def _load(self):
         if self.config_path.exists():
@@ -81,22 +88,27 @@ class ConfigManager:
         before = asdict(self.config)
         if self.config.poll_interval_sec == 3:
             self.config.poll_interval_sec = 1
+        language = normalize_language(self.config.language)
+        if not language:
+            language = detect_system_language()
+        self.config.language = language
         return asdict(self.config) != before
 
     def validate_paths(self) -> dict:
+        t = Translator(self.config.language).tr
         issues = {}
         if self.config.host_project_path:
             host = Path(self.config.host_project_path)
             if not host.exists():
-                issues["host_project_path"] = "路径不存在"
+                issues["host_project_path"] = t("config.path_missing")
         if self.config.host_output_path:
             out = Path(self.config.host_output_path)
             if not out.exists():
-                issues["host_output_path"] = "路径不存在"
+                issues["host_output_path"] = t("config.path_missing")
         if self.config.vmx_path:
             vmx = Path(self.config.vmx_path)
             if not vmx.exists():
-                issues["vmx_path"] = "VMX 文件不存在"
+                issues["vmx_path"] = t("config.vmx_missing")
         return issues
 
     def get_vm_bin_full_path(self) -> str:

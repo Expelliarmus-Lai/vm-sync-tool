@@ -16,6 +16,7 @@ from datetime import datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from i18n import Translator
 from preflight import PreflightChecker
 
 # Prevent CMD windows from popping up on Windows subprocess calls
@@ -163,6 +164,9 @@ class SyncManager:
         self._synced_count = 0
         self._bin_ready = False
 
+    def _tr(self, key: str, **kwargs) -> str:
+        return Translator(self.config.config.language).tr(key, **kwargs)
+
     @property
     def running(self) -> bool:
         return self._running
@@ -202,7 +206,7 @@ class SyncManager:
         self._start_copy_worker()
         self._start_observer()
         self._start_poller()
-        self._emit("info", LogIcon.START, "同步服务已启动")
+        self._emit("info", LogIcon.START, self._tr("sync.service_started"))
         return True
 
     def stop(self):
@@ -218,13 +222,13 @@ class SyncManager:
         self._join_copy_worker_for_stop()
         self._join_poller_for_stop()
         self._clear_guest_state_sidecar(delete=True)
-        self._emit("info", LogIcon.STOP, "同步服务已停止")
+        self._emit("info", LogIcon.STOP, self._tr("sync.service_stopped"))
 
     def request_full_sync_cancel(self):
         self._full_sync_cancel.set()
         if self._full_sync_active:
-            self._emit("warning", LogIcon.CANCEL, "已请求取消全量同步: 正在等待当前 VM 文件操作完成后清理")
-            self._emit_progress(0.95, "正在取消全量同步，等待当前操作完成", active=True)
+            self._emit("warning", LogIcon.CANCEL, self._tr("sync.full.cancel_requested"))
+            self._emit_progress(0.95, self._tr("sync.full.cancel_wait"), active=True)
 
     def preflight_snapshot(self) -> tuple:
         cfg = self.config.config
@@ -239,6 +243,7 @@ class SyncManager:
             cfg.host_output_path,
             cfg.debounce_ms,
             cfg.poll_interval_sec,
+            cfg.language,
             tuple(cfg.watch_extensions),
         )
 
@@ -261,12 +266,12 @@ class SyncManager:
         if not self._can_reuse_preflight(preflight_checked, preflight_snapshot):
             report = PreflightChecker(self.config.config).check()
             if not report.ok:
-                self._emit("error", LogIcon.ERROR, f"路径预检失败:\n{report.error_text}")
+                self._emit("error", LogIcon.ERROR, self._tr("ui.preflight.error", message=report.error_text))
                 return False
         try:
             Path(self.config.config.host_output_path).mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            self._emit("error", LogIcon.ERROR, f"无法创建输出目录: {e}。处理方法: 检查路径权限，或手动创建该目录后重试。")
+            self._emit("error", LogIcon.ERROR, self._tr("sync.create_output_failed", error=e))
             return False
         if not self._can_resolve_bin_target_for_start():
             return False
@@ -306,7 +311,7 @@ class SyncManager:
         self._startup_bin_content_key = self._bin_state_content_key(state_key)
         self._startup_bin_same_content_copy_pending = True
         self._startup_bin_baseline_pending = False
-        self._emit("info", LogIcon.BIN, f"已记录当前 .bin 状态: {bin_filename}。后续时间更新或内容变化会触发回传。")
+        self._emit("info", LogIcon.BIN, self._tr("sync.startup_bin_state", filename=bin_filename))
 
     def _record_startup_bin_signature(
         self,
@@ -316,7 +321,7 @@ class SyncManager:
     ):
         self._startup_bin_signature = (vm_bin.lower(), *signature)
         self._startup_bin_baseline_pending = False
-        self._emit("info", LogIcon.BIN, f"已记录当前 .bin 内容: {bin_filename}。后续内容变化会触发回传。")
+        self._emit("info", LogIcon.BIN, self._tr("sync.startup_bin_content", filename=bin_filename))
 
     def _vmrun(self) -> str:
         return self.config.config.vmrun_path
@@ -338,7 +343,7 @@ class SyncManager:
     def _start_observer(self):
         host_root = self.config.config.host_project_path
         if not host_root or not Path(host_root).exists():
-            self._emit("warning", LogIcon.WARNING, f"宿主机工程路径无效: {host_root}。处理方法: 检查路径是否存在并重新保存配置。")
+            self._emit("warning", LogIcon.WARNING, self._tr("sync.host_invalid", path=host_root))
             return
 
         self._debouncer = Debouncer(
@@ -349,7 +354,7 @@ class SyncManager:
         self._observer = Observer()
         self._observer.schedule(handler, host_root, recursive=True)
         self._observer.start()
-        self._emit("info", LogIcon.WATCH, f"已开始监听宿主机工程: {host_root}")
+        self._emit("info", LogIcon.WATCH, self._tr("sync.watch_started", path=host_root))
 
     def _on_file_changed(self, host_path: str):
         if not self._running:
@@ -484,9 +489,7 @@ class SyncManager:
         self._emit(
             "error",
             LogIcon.ERROR,
-            "增量同步已暂停: vmrun 执行超时，后续文件未继续上传。"
-            f"出错文件: {Path(host_path).name}。"
-            "处理方法: 先暂停脚本，确认 VM 可操作或重启 VMware Tools，再重新启动同步。",
+            self._tr("sync.incremental_suspended", filename=Path(host_path).name),
         )
 
     def _do_copy_to_vm(self, host_path: str):
@@ -507,12 +510,12 @@ class SyncManager:
                 f".{vm_dest_path.name}.vm_sync_tmp",
             )
 
-            self._emit("info", LogIcon.UPLOAD, f"同步到 VM: {rel}")
+            self._emit("info", LogIcon.UPLOAD, self._tr("sync.to_vm", path=rel))
 
             mkdir = self._ensure_guest_directory(vm_dir)
             if mkdir.returncode != 0:
                 err = self._vmrun_error(mkdir)
-                self._emit("error", LogIcon.ERROR, f"创建 VM 目录失败: {rel}。原因: {err}。处理方法: 检查 VM 路径、用户权限和 VMware Tools 状态。")
+                self._emit("error", LogIcon.ERROR, self._tr("sync.mkdir_failed", path=rel, error=err))
                 return
 
             result = self._run_vmrun(
@@ -533,20 +536,20 @@ class SyncManager:
                 if move.returncode != 0:
                     err = self._vmrun_error(move)
                     if not self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False):
-                        self._emit("warning", LogIcon.CLEANUP, f"VM 临时文件清理失败: {vm_tmp}。处理方法: 在 VM 中手动删除该文件后重试。")
-                    self._emit("error", LogIcon.ERROR, f"写入 VM 目标失败: {rel}。原因: {err}。处理方法: 检查目标文件是否被占用、VM 权限是否正常。")
+                        self._emit("warning", LogIcon.CLEANUP, self._tr("sync.cleanup_tmp_failed", path=vm_tmp))
+                    self._emit("error", LogIcon.ERROR, self._tr("sync.write_target_failed", path=rel, error=err))
                     return
                 self._synced_count += 1
-                self._emit("success", LogIcon.SUCCESS, f"已同步到 VM: {rel}")
+                self._emit("success", LogIcon.SUCCESS, self._tr("sync.to_vm_done", path=rel))
             else:
                 self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
                 err = result.stderr.strip() or "unknown error"
-                self._emit("error", LogIcon.ERROR, f"同步到 VM 失败: {rel}。原因: {err}。处理方法: 检查 VM 是否运行、VMware Tools 是否正常。")
+                self._emit("error", LogIcon.ERROR, self._tr("sync.to_vm_failed", path=rel, error=err))
 
         except subprocess.TimeoutExpired:
             self._suspend_incremental_uploads(host_path)
         except Exception as e:
-            self._emit("error", LogIcon.ERROR, f"同步文件异常: {Path(host_path).name}。原因: {e}")
+            self._emit("error", LogIcon.ERROR, self._tr("sync.file_exception", filename=Path(host_path).name, error=e))
 
     # ── Poller (VM → Host, .bin) ───────────────────────────
 
@@ -571,7 +574,7 @@ class SyncManager:
             try:
                 self._check_bin()
             except Exception as e:
-                self._emit_bin_warning(f".bin 轮询异常: {e}")
+                self._emit_bin_warning(self._tr("sync.bin_poll_exception", error=e))
             # Sleep in small chunks so we can respond to stop() quickly
             interval = self.config.config.poll_interval_sec
             for _ in range(interval * 2):
@@ -619,7 +622,7 @@ class SyncManager:
                     self._emit(
                         "info",
                         LogIcon.BIN,
-                        f"检测到首次记录后 .bin 时间已更新: {bin_filename}。内容未变化，本次仍回传一次。",
+                        self._tr("sync.startup_same_content_copy", filename=bin_filename),
                     )
                     self._startup_bin_state = None
                     self._startup_bin_content_key = None
@@ -715,15 +718,15 @@ class SyncManager:
             self._bin_ready = True
             self._emit(
                 "success", LogIcon.DOWNLOAD,
-                f"已回传固件: {bin_filename} → {self.config.config.host_output_path}"
+                self._tr("sync.returned_firmware", filename=bin_filename, path=self.config.config.host_output_path)
             )
-            self._emit("info", LogIcon.FIRMWARE, "固件已就绪，可烧录")
+            self._emit("info", LogIcon.FIRMWARE, self._tr("sync.firmware_ready"))
             # Trigger tray notification
             self.event_queue.put(("bin_ready", bin_filename))
         else:
             tmp_path.unlink(missing_ok=True)
             err = self._vmrun_error(result)
-            self._emit("error", LogIcon.ERROR, f"拉取 .bin 失败: {err}。处理方法: 检查 VM 内 .bin 路径、用户权限和 VMware Tools 状态。")
+            self._emit("error", LogIcon.ERROR, self._tr("sync.pull_bin_failed", error=err))
 
     def _bin_state_content_key(self, state_key: tuple) -> tuple[str, str] | None:
         if len(state_key) < 4:
@@ -781,7 +784,7 @@ class SyncManager:
         self._emit(
             "info",
             LogIcon.INFO,
-            f"检测到 .bin 时间更新但内容未变化: {bin_filename}。已跳过覆盖。",
+            self._tr("sync.bin_unchanged", filename=bin_filename),
         )
         self.event_queue.put(("bin_unchanged", bin_filename))
         self._last_bin_unchanged_log_state = log_key
@@ -837,7 +840,7 @@ class SyncManager:
             if self._guest_file_exists(vm_bin):
                 return BinTargetCheck(True, resolved=(vm_bin, filename))
         except subprocess.TimeoutExpired:
-            message = f"VM .bin 文件检测超时: {vm_bin}"
+            message = self._tr("sync.bin_check_timeout", path=vm_bin)
             if emit:
                 self._emit_bin_error(message)
             return BinTargetCheck(False, "error", message)
@@ -845,7 +848,7 @@ class SyncManager:
         vm_dir = str(PureWindowsPath(vm_bin).parent)
         listing = self._list_guest_bin_names(vm_dir)
         if not listing.ok:
-            message = f"无法读取 VM .bin 目录: {vm_dir}: {listing.message}"
+            message = self._tr("sync.bin_dir_read_failed", path=vm_dir, error=listing.message)
             if emit:
                 self._emit_bin_error(message)
             return BinTargetCheck(False, "error", message)
@@ -855,9 +858,9 @@ class SyncManager:
             for name in listing.names
         )
         if choices:
-            message = f"VM .bin 文件不存在: {self._guest_relative_to_project(vm_bin)}；当前目录可选: {choices}"
+            message = self._tr("sync.bin_file_missing_with_choices", path=self._guest_relative_to_project(vm_bin), choices=choices)
         else:
-            message = f"VM .bin 文件不存在: {self._guest_relative_to_project(vm_bin)}；当前目录没有 .bin 文件"
+            message = self._tr("sync.bin_file_missing_no_choices", path=self._guest_relative_to_project(vm_bin))
         if emit:
             self._emit_bin_error(message)
         return BinTargetCheck(False, "error", message)
@@ -865,7 +868,7 @@ class SyncManager:
     def _validate_bin_directory(self, vm_dir: str, emit: bool = False) -> BinTargetCheck:
         listing = self._list_guest_bin_names(vm_dir)
         if not listing.ok:
-            message = f"无法读取 VM .bin 目录: {vm_dir}: {listing.message}"
+            message = self._tr("sync.bin_dir_read_failed", path=vm_dir, error=listing.message)
             if emit:
                 self._emit_bin_error(message)
             return BinTargetCheck(False, "error", message)
@@ -877,14 +880,14 @@ class SyncManager:
                 self._emit(
                     "info",
                     LogIcon.BIN,
-                    f"已自动选择唯一 .bin 文件: {self._guest_relative_to_project(resolved_path)}",
+                    self._tr("sync.autoselect_bin", path=self._guest_relative_to_project(resolved_path)),
                 )
             return BinTargetCheck(
                 True,
                 resolved=(resolved_path, name),
             )
         if not listing.names:
-            message = f"未找到 VM .bin: {vm_dir}"
+            message = self._tr("sync.bin_missing", path=vm_dir)
             if emit:
                 self._emit_bin_warning(message)
             return BinTargetCheck(True, "warning", message)
@@ -893,10 +896,7 @@ class SyncManager:
             self._guest_path_join(self._guest_relative_to_project(vm_dir), name)
             for name in listing.names
         )
-        message = (
-            "VM 目录下有多个 .bin，请在配置面板的“.bin 相对路径”"
-            f"填写完整文件名，例如: {examples}"
-        )
+        message = self._tr("sync.bin_multiple", examples=examples)
         if emit:
             self._emit_bin_error(message)
         return BinTargetCheck(False, "error", message)
@@ -912,7 +912,7 @@ class SyncManager:
                 timeout=15,
             )
         except subprocess.TimeoutExpired:
-            return GuestBinListing(False, [], "vmrun 超时")
+            return GuestBinListing(False, [], self._tr("sync.vm_timeout"))
         if result.returncode != 0:
             return GuestBinListing(False, [], self._vmrun_error(result))
         return GuestBinListing(True, self._parse_bin_names(result.stdout or ""))
@@ -1203,7 +1203,7 @@ class SyncManager:
 
     def _fail_full_sync(self, message: str) -> int:
         self._emit("error", LogIcon.ERROR, message)
-        self._emit_progress(1.0, f"全量同步失败: {message}", active=False)
+        self._emit_progress(1.0, self._tr("sync.full.failed_progress", message=message), active=False)
         return 0
 
     def _vmrun_error(self, result) -> str:
@@ -1213,7 +1213,7 @@ class SyncManager:
         if err == "unknown error" and hasattr(result, "returncode"):
             err = f"{err} (return code {result.returncode})"
         if "Guest user:" in err:
-            return "VM 用户名/密码无效或未配置，无法在虚拟机内执行命令"
+            return self._tr("sync.guest_auth_failed")
         return err
 
     def _ensure_guest_directory(self, vm_path: str):
@@ -1294,11 +1294,11 @@ class SyncManager:
                 continue
             seen.add(path)
             if not self._cleanup_guest_path(vmx, path, is_dir):
-                self._emit("warning", LogIcon.CLEANUP, f"VM 临时路径清理失败: {path}。处理方法: 在 VM 中手动删除该路径。")
+                self._emit("warning", LogIcon.CLEANUP, self._tr("sync.cleanup_full_failed", path=path))
 
     def _cancel_full_sync(self, message: str) -> int:
-        self._emit("warning", LogIcon.CANCEL, f"全量同步已取消: {message}")
-        self._emit_progress(1.0, f"全量同步已取消: {message}", active=False)
+        self._emit("warning", LogIcon.CANCEL, self._tr("sync.full.cancel_progress", message=message))
+        self._emit_progress(1.0, self._tr("sync.full.cancel_progress", message=message), active=False)
         return 0
 
     def _create_full_sync_zip(self, host_root: Path, files: list[Path]) -> str:
@@ -1322,45 +1322,45 @@ class SyncManager:
 
         try:
             if not cfg.vmx_path:
-                self._emit("error", LogIcon.ERROR, "缺少 VMX 路径。处理方法: 在配置栏选择目标虚拟机的 .vmx 文件。")
+                self._emit("error", LogIcon.ERROR, self._tr("sync.full.missing_vmx"))
                 return 0
             if not cfg.host_project_path:
-                self._emit("error", LogIcon.ERROR, "缺少宿主机工程路径。处理方法: 在配置栏选择宿主机 Keil 工程目录。")
+                self._emit("error", LogIcon.ERROR, self._tr("sync.full.missing_host"))
                 return 0
             if not cfg.vm_project_path:
-                self._emit("error", LogIcon.ERROR, "缺少 VM 工程路径。处理方法: 填写虚拟机内的工程目录。")
+                self._emit("error", LogIcon.ERROR, self._tr("sync.full.missing_vm_project"))
                 return 0
             if not self._has_guest_credentials():
                 return self._fail_full_sync(
-                    "缺少 VM 用户名或密码。处理方法: 在配置栏填写虚拟机 Windows 用户名和密码；不要使用空密码。"
+                    self._tr("sync.full.missing_credentials")
                 )
 
             host_root = Path(cfg.host_project_path)
             if not host_root.exists():
-                self._emit("error", LogIcon.ERROR, "宿主机工程路径不存在，无法全量同步。处理方法: 检查路径后重新保存配置。")
+                self._emit("error", LogIcon.ERROR, self._tr("sync.full.host_missing"))
                 return 0
 
             files = self._syncable_files(host_root)
             total = len(files)
             if total == 0:
-                self._emit("warning", LogIcon.WARNING, "没有找到需要同步的文件。处理方法: 检查宿主机工程目录是否为空。")
-                self._emit_progress(1.0, "没有需要同步的文件", active=False)
+                self._emit("warning", LogIcon.WARNING, self._tr("sync.full.empty"))
+                self._emit_progress(1.0, self._tr("sync.full.empty_progress"), active=False)
                 return 0
 
-            self._emit("info", LogIcon.TOOL, f"全量同步开始: 准备打包 {total} 个文件")
-            self._emit_progress(0.0, "准备文件列表")
-            self._emit_progress(0.15, "正在压缩工程文件")
+            self._emit("info", LogIcon.TOOL, self._tr("sync.full.start", count=total))
+            self._emit_progress(0.0, self._tr("sync.full.step_files"))
+            self._emit_progress(0.15, self._tr("sync.full.step_compress"))
             zip_path = self._create_full_sync_zip(host_root, files)
             zip_size_mb = Path(zip_path).stat().st_size / (1024 * 1024)
-            self._emit("info", LogIcon.PACKAGE, f"压缩包已生成: {zip_size_mb:.1f} MB")
+            self._emit("info", LogIcon.PACKAGE, self._tr("sync.full.package_ready", size=zip_size_mb))
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("上传前收到取消请求，未上传压缩包，未修改 VM 工程目录。")
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_upload"))
 
-            self._emit_progress(0.35, "正在创建 VM 目标目录")
+            self._emit_progress(0.35, self._tr("sync.full.step_create_dir"))
             mkdir = self._ensure_guest_directory(cfg.vm_project_path)
             if mkdir.returncode != 0:
                 err = self._vmrun_error(mkdir)
-                return self._fail_full_sync(f"创建 VM 工程目录失败: {err}。处理方法: 检查 VM 工程路径、用户权限和 VMware Tools 状态。")
+                return self._fail_full_sync(self._tr("sync.full.create_dir_failed", error=err))
 
             temp_marker = self._create_guest_tempfile(cfg.vmx_path)
             if temp_marker:
@@ -1379,7 +1379,7 @@ class SyncManager:
                     (guest_stage_dir, True),
                 ])
 
-            self._emit_progress(0.50, "正在上传压缩包到 VM 临时目录")
+            self._emit_progress(0.50, self._tr("sync.full.step_upload"))
             upload = self._run_vmrun(
                 [
                     "CopyFileFromHostToGuest",
@@ -1391,19 +1391,19 @@ class SyncManager:
             )
             if upload.returncode != 0:
                 err = self._vmrun_error(upload)
-                return self._fail_full_sync(f"上传压缩包到 VM 失败: {err}。处理方法: 检查 VM 是否运行、VMware Tools 是否正常，并确认 VM 临时目录可写。")
+                return self._fail_full_sync(self._tr("sync.full.upload_failed", error=err))
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("上传后收到取消请求，已停止解压和覆盖，正在清理 VM 临时文件。")
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_after_upload"))
 
-            self._emit_progress(0.65, "正在创建 VM 临时解压目录")
+            self._emit_progress(0.65, self._tr("sync.full.step_create_stage"))
             stage_dir = self._ensure_guest_directory(guest_stage_dir)
             if stage_dir.returncode != 0:
                 err = self._vmrun_error(stage_dir)
-                return self._fail_full_sync(f"创建 VM 临时解压目录失败: {err}。处理方法: 检查 VM 临时目录权限，或重启 VMware Tools 后重试。")
+                return self._fail_full_sync(self._tr("sync.full.create_stage_failed", error=err))
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("解压前收到取消请求，未覆盖 VM 工程目录，正在清理 VM 临时文件。")
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_extract"))
 
-            self._emit_progress(0.75, "正在 VM 临时目录内解压")
+            self._emit_progress(0.75, self._tr("sync.full.step_extract"))
             extract_script = (
                 "$ErrorActionPreference='Stop'; "
                 f"Expand-Archive -LiteralPath {self._ps_literal(guest_zip)} "
@@ -1419,11 +1419,11 @@ class SyncManager:
             )
             if extract.returncode != 0:
                 err = self._vmrun_error(extract)
-                return self._fail_full_sync(f"VM 内解压失败: {err}。处理方法: 检查 VM 磁盘空间、PowerShell Expand-Archive 是否可用。")
+                return self._fail_full_sync(self._tr("sync.full.extract_failed", error=err))
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("覆盖前收到取消请求，目标工程未被覆盖，正在清理 VM 临时文件。")
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_cover"))
 
-            self._emit_progress(0.86, "正在覆盖 VM 工程目录")
+            self._emit_progress(0.86, self._tr("sync.full.step_cover"))
             cover_script = (
                 "$ErrorActionPreference='Stop'; "
                 f"New-Item -ItemType Directory -Force -Path {self._ps_literal(cfg.vm_project_path)} | Out-Null; "
@@ -1440,20 +1440,20 @@ class SyncManager:
             )
             if cover.returncode != 0:
                 err = self._vmrun_error(cover)
-                return self._fail_full_sync(f"VM 工程覆盖失败: {err}。处理方法: 检查目标文件是否被 Keil 或其他程序占用，关闭占用程序后重试。")
+                return self._fail_full_sync(self._tr("sync.full.cover_failed", error=err))
             if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync("覆盖阶段收到取消请求，当前覆盖已完成，正在清理临时文件。")
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_after_cover"))
 
-            self._emit_progress(0.92, "正在清理临时文件")
+            self._emit_progress(0.92, self._tr("sync.full.step_cleanup"))
             self._cleanup_full_sync_guest_paths(cfg.vmx_path, guest_cleanup)
             guest_cleanup = []
 
             self._synced_count += total
-            self._emit_progress(1.0, f"全量同步完成 ({total}/{total})", active=False)
-            self._emit("success", LogIcon.SUCCESS, f"全量同步完成: 已同步 {total} 个文件")
+            self._emit_progress(1.0, self._tr("sync.full.done_progress", done=total, total=total), active=False)
+            self._emit("success", LogIcon.SUCCESS, self._tr("sync.full.done", count=total))
             return total
         except subprocess.TimeoutExpired as e:
-            return self._fail_full_sync(f"全量同步超时: {e}。处理方法: 检查 VM 是否卡住，必要时重启 VMware Tools 后重试。")
+            return self._fail_full_sync(self._tr("sync.full.timeout", error=e))
         except Exception as e:
             return self._fail_full_sync(str(e))
         finally:

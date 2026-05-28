@@ -26,6 +26,7 @@ Typical workflow:
 - Configuration saves are logged with the `config.json` path.
 - `.bin` timestamp-only updates with unchanged content are skipped and reported through a tray notification.
 - During full sync, configuration fields and Start are disabled, the full-sync button changes to Cancel Full Sync, and cancellation waits for the current VM operation before cleanup.
+- Supports Chinese/English UI switching. First launch prefers the Windows display/UI language, and manual changes are remembered.
 - Supports system tray operation, so the sync service can continue after the window is hidden.
 - Stops sync threads and cleans temporary VM state files when the application exits.
 
@@ -42,7 +43,7 @@ This tool does not install VMware Workstation, VMware Tools, or Keil, and it doe
 
 ## Usage Entry Points
 
-Regular users should download the release package: [VM-Sync-v1.0.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.0.0/VM-Sync-v1.0.0.zip).
+Regular users should download the release package: [VM-Sync-v1.1.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.1.0/VM-Sync-v1.1.0.zip).
 
 You can also open [GitHub Releases](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/latest) for the latest version. The release package should look like this:
 
@@ -155,9 +156,10 @@ The build output is generated at:
 
 ```text
 dist\VM Sync\
+dist\VM-Sync-v1.1.0.zip
 ```
 
-Distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, because the executable depends on the adjacent `_internal` directory.
+Distribute `VM-Sync-v1.1.0.zip`, or distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, because the executable depends on the adjacent `_internal` directory.
 
 ## Repository Maintenance
 

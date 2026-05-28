@@ -37,10 +37,14 @@ class TrayMenuTests(unittest.TestCase):
     def test_tray_sync_label_reflects_running_state(self):
         self.assertEqual("⏸  暂停同步 (运行中)", tray_sync_label(True))
         self.assertEqual("▶  启动同步 (已停止)", tray_sync_label(False))
+        self.assertEqual("⏸  Pause sync (running)", tray_sync_label(True, "en"))
+        self.assertEqual("▶  Start sync (stopped)", tray_sync_label(False, "en"))
 
     def test_tray_status_label_reflects_running_state(self):
         self.assertEqual("状态：运行中", tray_status_label(True))
         self.assertEqual("状态：已停止", tray_status_label(False))
+        self.assertEqual("Status: Running", tray_status_label(True, "en"))
+        self.assertEqual("Status: Stopped", tray_status_label(False, "en"))
 
 
     def test_tray_quit_runs_complete_shutdown(self):
@@ -140,12 +144,12 @@ class TrayMenuTests(unittest.TestCase):
             def notify(self, message, title):
                 notifications.append((message, title))
 
-        app = SimpleNamespace(_tray_icon=FakeTrayIcon())
+        app = SimpleNamespace(_tray_icon=FakeTrayIcon(), cm=SimpleNamespace(config=SimpleNamespace(language="en")))
 
         App._on_bin_unchanged(app, "firmware.bin")
 
         self.assertEqual(
-            [("固件内容未变化，已跳过覆盖: firmware.bin", "VM Sync")],
+            [("Firmware content unchanged, skipped overwrite: firmware.bin", "VM Sync")],
             notifications,
         )
 

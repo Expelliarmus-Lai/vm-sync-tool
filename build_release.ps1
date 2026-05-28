@@ -3,9 +3,12 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
+$ReleaseVersion = if ($env:VM_SYNC_VERSION) { $env:VM_SYNC_VERSION } else { "v1.1.0" }
+$ReleaseZip = Join-Path $Root ("dist\VM-Sync-{0}.zip" -f $ReleaseVersion)
 
 Write-Host "== VM Sync release build =="
 Write-Host "Project: $Root"
+Write-Host "Version: $ReleaseVersion"
 
 python -m PyInstaller --clean --noconfirm "VM Sync.spec"
 
@@ -36,6 +39,14 @@ if (Test-Path $RuntimeConfig) {
     Remove-Item -LiteralPath $RuntimeConfig -Force
 }
 
+if (Test-Path $ReleaseZip) {
+    Remove-Item -LiteralPath $ReleaseZip -Force
+}
+Compress-Archive -LiteralPath $ReleaseDir -DestinationPath $ReleaseZip -Force
+$ReleaseHash = Get-FileHash -LiteralPath $ReleaseZip -Algorithm SHA256
+
 Write-Host ""
 Write-Host "Build complete:"
 Write-Host (Join-Path $Root "dist\VM Sync")
+Write-Host $ReleaseZip
+Write-Host ("SHA256: {0}" -f $ReleaseHash.Hash.ToLowerInvariant())

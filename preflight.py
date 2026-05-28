@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import PureWindowsPath, Path
 
 from config_manager import Config
+from i18n import Translator
 from vmrun_resolver import RunningVmsResult, list_running_vms, normalize_vmx_path
 
 KEIL_PROJECT_EXTENSIONS = {".uvprojx", ".uvoptx", ".uvproj", ".uvopt", ".uv2", ".opt"}
@@ -38,6 +39,7 @@ class PreflightChecker:
     def __init__(self, config: Config, running_vms_provider=list_running_vms):
         self.config = config
         self.running_vms_provider = running_vms_provider
+        self.t = Translator(config.language).tr
 
     def check(self, for_full_sync: bool = False) -> PreflightReport:
         report = PreflightReport()
@@ -45,46 +47,46 @@ class PreflightChecker:
         report.vmrun_path = cfg.vmrun_path
 
         if not cfg.vmrun_path:
-            report.errors.append("请先配置 vmrun.exe 路径")
+            report.errors.append(self.t("preflight.vmrun.missing"))
         elif not Path(cfg.vmrun_path).exists():
-            report.errors.append(f"vmrun.exe 不存在: {cfg.vmrun_path}")
+            report.errors.append(self.t("preflight.vmrun.not_found", path=cfg.vmrun_path))
         else:
             self._check_running_vm(report)
 
         if not cfg.vm_guest_user:
-            report.errors.append("请先配置 VM 用户名，用于 vmrun 在虚拟机内执行文件操作")
+            report.errors.append(self.t("preflight.guest.user_missing"))
         if not cfg.vm_guest_password:
-            report.errors.append("请先配置 VM 密码；空密码可能触发 VMware VIX 异常弹窗或卡死")
+            report.errors.append(self.t("preflight.guest.password_missing"))
 
         host_root = Path(cfg.host_project_path) if cfg.host_project_path else None
         if not cfg.host_project_path:
-            report.errors.append("请先配置宿主机工程路径")
+            report.errors.append(self.t("preflight.host_project.missing"))
         elif not host_root.exists():
-            report.errors.append(f"宿主机工程路径不存在: {host_root}")
+            report.errors.append(self.t("preflight.host_project.not_found", path=host_root))
         elif not host_root.is_dir():
-            report.errors.append(f"宿主机工程路径不是目录: {host_root}")
+            report.errors.append(self.t("preflight.host_project.file", path=host_root))
 
         if not cfg.vmx_path:
-            report.errors.append("请先配置 VMX 路径")
+            report.errors.append(self.t("preflight.vmx.missing"))
         elif not Path(cfg.vmx_path).exists():
-            report.errors.append(f"VMX 文件不存在: {cfg.vmx_path}")
+            report.errors.append(self.t("preflight.vmx.not_found", path=cfg.vmx_path))
 
         if not cfg.vm_project_path:
-            report.errors.append("请先配置 VM 工程路径")
+            report.errors.append(self.t("preflight.vm_project.missing"))
         else:
             self._check_vm_project_path(cfg.vm_project_path, report)
 
         if not cfg.host_output_path:
-            report.errors.append("请先配置宿主机输出路径")
+            report.errors.append(self.t("preflight.host_output.missing"))
         else:
             host_output = Path(cfg.host_output_path)
             if host_output.exists() and not host_output.is_dir():
-                report.errors.append(f"宿主机输出路径不是目录: {host_output}")
+                report.errors.append(self.t("preflight.host_output.file", path=host_output))
 
         if not cfg.vm_bin_relative_path:
-            report.errors.append("请先配置 .bin 相对路径")
+            report.errors.append(self.t("preflight.bin.missing"))
         elif self._is_absolute_windows_path(cfg.vm_bin_relative_path):
-            report.errors.append(".bin 相对路径不能是绝对路径")
+            report.errors.append(self.t("preflight.bin.absolute"))
 
         if host_root and host_root.exists() and host_root.is_dir():
             report.project_files = sorted(
@@ -93,7 +95,7 @@ class PreflightChecker:
             )
             if not report.project_files:
                 report.warnings.append(
-                    "未找到 Keil 工程文件 (.uvprojx/.uvoptx/.uvproj/.uvopt/.uv2/.opt)，请确认宿主机工程路径是否正确"
+                    self.t("preflight.keil.not_found")
                 )
             else:
                 self._check_bin_name_matches_project(report)
@@ -111,13 +113,12 @@ class PreflightChecker:
         except TypeError:
             result = self.running_vms_provider(self.config.vmrun_path)
         if not result.ok:
-            if "超时" in result.error:
+            if "超时" in result.error or "timeout" in result.error.lower():
                 report.errors.append(
-                    f"vmrun list 执行超时: {result.error}\n"
-                    "请确认 VMware Workstation 已打开且虚拟机已启动；如果仍超时，建议重启 VMware Workstation 或 VMware Authorization Service 后再试。"
+                    self.t("preflight.vmrun.list_timeout", error=result.error)
                 )
                 return
-            report.errors.append(f"vmrun list 执行失败: {result.error}")
+            report.errors.append(self.t("preflight.vmrun.list_failed", error=result.error))
             return
 
         report.running_vmx_paths = result.paths
@@ -128,13 +129,13 @@ class PreflightChecker:
         running = {normalize_vmx_path(path) for path in result.paths}
         report.configured_vmx_is_running = configured in running
         if not report.configured_vmx_is_running:
-            report.errors.append("配置的 VMX 当前未运行，请先启动对应虚拟机")
+            report.errors.append(self.t("preflight.vmx.not_running"))
 
     def _check_vm_project_path(self, vm_path: str, report: PreflightReport):
         path = PureWindowsPath(vm_path)
         normalized = vm_path.strip().rstrip("\\/")
         if path.drive and normalized.upper() == path.drive.upper():
-            report.errors.append("VM 工程路径不能是磁盘根目录")
+            report.errors.append(self.t("preflight.vm_project.root"))
             return
 
         risky = {
@@ -146,7 +147,7 @@ class PreflightChecker:
             r"C:\Keil",
         }
         if normalized.lower() in {p.lower() for p in risky}:
-            report.errors.append(f"VM 工程路径过宽，容易误覆盖: {vm_path}")
+            report.errors.append(self.t("preflight.vm_project.danger", path=vm_path))
 
     def _count_sync_files(self, host_root: Path) -> int:
         exts = {ext.lower() for ext in self.config.watch_extensions}
@@ -169,20 +170,20 @@ class PreflightChecker:
         }
         if project_stems and bin_stem not in project_stems:
             report.warnings.append(
-                ".bin 文件名与 Keil 工程名不一致，请确认输出路径是否填对"
+                self.t("preflight.bin.name_mismatch")
             )
 
     def _build_summary(self, report: PreflightReport, for_full_sync: bool) -> str:
         cfg = self.config
-        action = "将同步" if for_full_sync else "将监听"
-        project = ", ".join(report.project_files) if report.project_files else "未发现"
+        action_key = "preflight.action.full" if for_full_sync else "preflight.action.watch"
+        project = ", ".join(report.project_files) if report.project_files else self.t("preflight.summary.project.none")
         return "\n".join([
-            f"{action} {report.sync_file_count} 个文件",
+            self.t(action_key, count=report.sync_file_count),
             f"vmrun: {cfg.vmrun_path}",
-            f"来源: {cfg.host_project_path}",
-            f"目标: VM {cfg.vm_project_path}",
-            f"工程文件: {project}",
-            f"输出文件: {cfg.vm_bin_relative_path}",
+            self.t("preflight.summary.source", path=cfg.host_project_path),
+            self.t("preflight.summary.target", path=cfg.vm_project_path),
+            self.t("preflight.summary.project", project=project),
+            self.t("preflight.summary.output", path=cfg.vm_bin_relative_path),
         ])
 
     def _is_absolute_windows_path(self, path: str) -> bool:

@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageTk
 import pystray
 
 from config_manager import ConfigManager
+from i18n import Translator, normalize_language
 from preflight import PreflightChecker, PreflightReport
 from syncer import LogIcon, SyncManager, LogEvent
 from vmrun_resolver import list_running_vms, normalize_vmx_path, resolve_vmrun_path
@@ -200,6 +201,20 @@ LOG_MESSAGE_TAGS = {
     "warning": "msg_warning",
     "info": "msg_info",
 }
+
+LANGUAGE_SEGMENT_VALUES = {
+    "zh": "中",
+    "en": "EN",
+}
+SEGMENT_VALUE_LANGUAGES = {value: key for key, value in LANGUAGE_SEGMENT_VALUES.items()}
+
+
+def app_tr(app, key: str, **kwargs) -> str:
+    tr_func = getattr(app, "tr", None)
+    if callable(tr_func):
+        return tr_func(key, **kwargs)
+    language = getattr(getattr(getattr(app, "cm", None), "config", None), "language", "zh")
+    return Translator(language).tr(key, **kwargs)
 
 
 def log_message_tag(level: str) -> str:
@@ -406,12 +421,14 @@ def set_windows_app_user_model_id():
         pass
 
 
-def tray_sync_label(running: bool) -> str:
-    return "⏸  暂停同步 (运行中)" if running else "▶  启动同步 (已停止)"
+def tray_sync_label(running: bool, language: str = "zh") -> str:
+    t = Translator(language).tr
+    return t("tray.sync.pause") if running else t("tray.sync.start")
 
 
-def tray_status_label(running: bool) -> str:
-    return "状态：运行中" if running else "状态：已停止"
+def tray_status_label(running: bool, language: str = "zh") -> str:
+    t = Translator(language).tr
+    return t("tray.status.running") if running else t("tray.status.stopped")
 
 
 # ── Control Panel ────────────────────────────────────────────
@@ -446,7 +463,7 @@ class ControlPanel(ctk.CTkFrame):
         )
         self.start_btn = ctk.CTkButton(
             btn_frame,
-            text="启动",
+            text=self._tr("ui.button.start"),
             image=self._play_icon,
             compound="left",
             anchor="center",
@@ -463,7 +480,7 @@ class ControlPanel(ctk.CTkFrame):
 
         self.pause_btn = ctk.CTkButton(
             btn_frame,
-            text="暂停",
+            text=self._tr("ui.button.pause"),
             image=self._pause_icon,
             compound="left",
             anchor="center",
@@ -485,7 +502,7 @@ class ControlPanel(ctk.CTkFrame):
 
         self.sync_label = ctk.CTkLabel(
             stats_frame,
-            text="已同步  0",
+            text=self._tr("ui.control.synced", count=0),
             font=ui_font(size=13),
             text_color=p["text_dim"],
             anchor="w",
@@ -494,7 +511,7 @@ class ControlPanel(ctk.CTkFrame):
 
         self.bin_label = ctk.CTkLabel(
             stats_frame,
-            text=".bin    —",
+            text=self._tr("ui.bin.waiting"),
             font=ui_font(size=13),
             text_color=p["text_dim"],
             anchor="w",
@@ -503,12 +520,15 @@ class ControlPanel(ctk.CTkFrame):
 
         self.uptime_label = ctk.CTkLabel(
             stats_frame,
-            text="运行时间  —",
+            text=self._tr("ui.control.uptime.empty"),
             font=ui_font(size=13),
             text_color=p["text_dim"],
             anchor="w",
         )
         self.uptime_label.pack(anchor="w")
+
+    def _tr(self, key: str, **kwargs) -> str:
+        return app_tr(self.app, key, **kwargs)
 
     def _start(self):
         report = self.app.config_panel.save_and_check()
@@ -536,7 +556,10 @@ class ControlPanel(ctk.CTkFrame):
         if started:
             self._set_running()
         else:
-            message = f"启动同步失败: {error}" if error else "启动同步失败，请查看上方错误并修正配置"
+            message = (
+                self._tr("ui.start.failed_with_error", error=error)
+                if error else self._tr("ui.start.failed")
+            )
             self.app.log_panel.append(LogEvent(LogIcon.ERROR, message, "error"))
             self._set_stopped()
 
@@ -544,7 +567,7 @@ class ControlPanel(ctk.CTkFrame):
         try:
             self.app.sync.stop()
         except Exception as e:
-            self.app.log_panel.append(LogEvent(LogIcon.ERROR, f"暂停同步失败: {e}。处理方法: 查看同步状态，必要时退出程序后重新启动。", "error"))
+            self.app.log_panel.append(LogEvent(LogIcon.ERROR, self._tr("ui.pause.failed", error=e), "error"))
         self._set_stopped()
 
     def _set_running(self):
@@ -576,11 +599,13 @@ class ControlPanel(ctk.CTkFrame):
             hover_color=p["accent_hover"],
             text_color=p["button_text"],
         )
+        self.app._status_indicator_state = "stopped"
         self.app._update_status_indicator(False)
         self.app._update_tray_menu()
         self._start_time = None
-        self.uptime_label.configure(text="运行时间  —")
-        self._last_uptime_text = "运行时间  —"
+        text = self._tr("ui.control.uptime.empty")
+        self.uptime_label.configure(text=text)
+        self._last_uptime_text = text
 
     def set_full_sync_active(self, active: bool):
         self._full_sync_active = active
@@ -598,25 +623,38 @@ class ControlPanel(ctk.CTkFrame):
 
     def update_stats(self, sync_count: int, bin_ready: bool):
         if sync_count != self._last_sync_count:
-            self.sync_label.configure(text=f"已同步  {sync_count}")
+            self.sync_label.configure(text=self._tr("ui.control.synced", count=sync_count))
             self._last_sync_count = sync_count
         if bin_ready != self._last_bin_ready:
             if bin_ready:
                 p = current_palette()
-                self.bin_label.configure(text=".bin    就绪 ✓", text_color=p["success"])
+                self.bin_label.configure(text=self._tr("ui.bin.ready"), text_color=p["success"])
             else:
                 self.bin_label.configure(
-                    text=".bin    —",
+                    text=self._tr("ui.bin.waiting"),
                     text_color=current_palette()["text_dim"],
                 )
             self._last_bin_ready = bin_ready
         if self._start_time:
             elapsed = int(time.time() - self._start_time)
             h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
-            uptime_text = f"运行时间  {h:02d}:{m:02d}:{s:02d}"
+            uptime_text = self._tr("ui.control.uptime", uptime=f"{h:02d}:{m:02d}:{s:02d}")
             if uptime_text != self._last_uptime_text:
                 self.uptime_label.configure(text=uptime_text)
                 self._last_uptime_text = uptime_text
+
+    def refresh_language(self):
+        self.start_btn.configure(text=self._tr("ui.button.start"))
+        self.pause_btn.configure(text=self._tr("ui.button.pause"))
+        self._last_sync_count = None
+        self._last_bin_ready = None
+        self.update_stats(self.app.sync.synced_count, self.app.sync.bin_ready)
+        if not self._start_time:
+            text = self._tr("ui.control.uptime.empty")
+            self.uptime_label.configure(text=text)
+            self._last_uptime_text = text
+        else:
+            self._last_uptime_text = ""
 
     def refresh_theme(self):
         p = current_palette()
@@ -664,6 +702,15 @@ class ConfigPanel(ctk.CTkFrame):
         "vm_project_path",
         "host_output_path",
     }
+    _FIELD_SPECS = [
+        ("vmx_path", "ui.config.field.vmx", "file", "ui.config.placeholder.vmx"),
+        ("vm_guest_user", "ui.config.field.vm_user", "path", "ui.config.placeholder.vm_user"),
+        ("vm_guest_password", "ui.config.field.vm_password", "password", "ui.config.placeholder.vm_password"),
+        ("host_project_path", "ui.config.field.host_project", "dir", "ui.config.placeholder.host_project"),
+        ("vm_project_path", "ui.config.field.vm_project", "path", "ui.config.placeholder.vm_project"),
+        ("vm_bin_relative_path", "ui.config.field.bin", "path", "ui.config.placeholder.bin"),
+        ("host_output_path", "ui.config.field.host_output", "dir", "ui.config.placeholder.host_output"),
+    ]
 
     def __init__(self, master, app: "App"):
         super().__init__(master, fg_color=current_palette()["card"],
@@ -671,6 +718,8 @@ class ConfigPanel(ctk.CTkFrame):
                          corner_radius=8)
         self.app = app
         self._entries = {}
+        self._field_labels = {}
+        self._field_placeholder_keys = {}
         self._browse_buttons = {}
         self._full_sync_thread: threading.Thread | None = None
         self._header_icon = icon_image(
@@ -705,37 +754,30 @@ class ConfigPanel(ctk.CTkFrame):
         )
         self._build()
 
+    def _tr(self, key: str, **kwargs) -> str:
+        return app_tr(self.app, key, **kwargs)
+
     def _build(self):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(10, 5))
         self._header_text_label = pack_section_title(
             header,
             self._header_icon,
-            "配置",
+            self._tr("ui.section.config"),
         )
 
         # Entries
         entries_frame = ctk.CTkFrame(self, fg_color="transparent")
         entries_frame.pack(fill="x", padx=14, pady=(0, 4))
 
-        fields = [
-            ("vmx_path", "VMX 路径", "file", "当前运行 VM 的 .vmx"),
-            ("vm_guest_user", "VM 用户名", "path", "VM Windows 登录用户名"),
-            ("vm_guest_password", "VM 密码", "password", "VM Windows 登录密码"),
-            ("host_project_path", "宿主机工程路径", "dir", "宿主机 Keil 工程根目录"),
-            ("vm_project_path", "VM 工程路径", "path", "VM 内工程根目录，如 C:\\project"),
-            ("vm_bin_relative_path", ".bin 相对路径", "path", "相对 VM 工程，如 Output\\RL6492"),
-            ("host_output_path", "固件回传目录", "dir", "宿主机固件回传目录"),
-        ]
-
-        for key, label, mode, placeholder in fields:
-            self._add_field(entries_frame, key, label, mode, placeholder)
+        for key, label_key, mode, placeholder_key in self._FIELD_SPECS:
+            self._add_field(entries_frame, key, label_key, mode, placeholder_key)
         self._refresh_entry_placeholders()
         self.after_idle(self._refresh_entry_placeholders)
 
         self.bin_resolved_label = ctk.CTkLabel(
             self,
-            text="VM .bin 输出位置: —",
+            text=self._tr("bin.display.empty"),
             font=ui_font(size=11),
             text_color=current_palette()["text_dim"],
             fg_color=current_palette()["hint_bg"],
@@ -754,7 +796,7 @@ class ConfigPanel(ctk.CTkFrame):
 
         self.save_btn = ctk.CTkButton(
             btn_row,
-            text="保存并检测",
+            text=self._tr("ui.button.save_check"),
             image=self._save_icon,
             compound="left",
             width=124,
@@ -769,7 +811,7 @@ class ConfigPanel(ctk.CTkFrame):
 
         self.fullsync_btn = ctk.CTkButton(
             btn_row,
-            text="全量同步",
+            text=self._tr("ui.button.full_sync"),
             image=self._sync_icon,
             compound="left",
             width=114,
@@ -789,15 +831,18 @@ class ConfigPanel(ctk.CTkFrame):
         )
         self.status_label.pack(side="right")
 
-    def _add_field(self, parent, key, label, mode, placeholder):
+    def _add_field(self, parent, key, label_key, mode, placeholder_key):
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", pady=2)
 
-        ctk.CTkLabel(
-            row, text=label, width=132, anchor="w",
+        label = ctk.CTkLabel(
+            row, text=self._tr(label_key), width=132, anchor="w",
             font=ui_font(size=12),
             text_color=current_palette()["text_dim"],
-        ).pack(side="left", padx=(0, 6))
+        )
+        label.pack(side="left", padx=(0, 6))
+        self._field_labels[key] = label
+        self._field_placeholder_keys[key] = placeholder_key
 
         entry_kwargs = {"show": "*"} if mode == "password" else {}
         entry = ctk.CTkEntry(
@@ -806,7 +851,7 @@ class ConfigPanel(ctk.CTkFrame):
             border_color=current_palette()["entry_border"],
             fg_color=current_palette()["entry_bg"],
             placeholder_text_color=current_palette()["text_dim"],
-            placeholder_text=placeholder,
+            placeholder_text=self._tr(placeholder_key),
             **entry_kwargs,
         )
         entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
@@ -837,10 +882,10 @@ class ConfigPanel(ctk.CTkFrame):
 
     def _browse(self, key, mode):
         if mode == "dir":
-            path = filedialog.askdirectory(title="选择目录")
+            path = filedialog.askdirectory(title=self._tr("filedialog.dir"))
         else:
             path = filedialog.askopenfilename(
-                title="选择 VMX 文件",
+                title=self._tr("filedialog.vmx"),
                 filetypes=[("VMware VMX", "*.vmx"), ("All files", "*.*")],
             )
         if path:
@@ -878,7 +923,7 @@ class ConfigPanel(ctk.CTkFrame):
             log_panel.append(
                 LogEvent(
                     LogIcon.CONFIG,
-                    f"路径已保存至 config.json 文件: {self.app.cm.config_path}",
+                    self._tr("ui.config.saved", path=self.app.cm.config_path),
                     "success",
                 )
             )
@@ -1019,7 +1064,7 @@ class ConfigPanel(ctk.CTkFrame):
 
         if not cfg.vm_project_path or not cfg.vm_bin_relative_path:
             self.bin_resolved_label.configure(
-                text="VM .bin 输出位置: —",
+                text=self._tr("bin.display.empty"),
                 text_color=text_color,
             )
             return
@@ -1036,24 +1081,22 @@ class ConfigPanel(ctk.CTkFrame):
         if resolved:
             vm_path, _filename = resolved
             if is_file:
-                text = f"VM .bin 输出文件: {vm_path}"
+                text = self._tr("bin.display.file", path=vm_path)
             else:
                 self._autofill_resolved_bin_path(vm_path)
-                text = (
-                    f"已识别 .bin: {self._relative_vm_bin_path(vm_path)}    "
-                    f"VM .bin 输出文件: {vm_path}"
+                text = self._tr(
+                    "bin.display.detected",
+                    relative=self._relative_vm_bin_path(vm_path),
+                    path=vm_path,
                 )
             text_color = p["success"]
         elif check_guest and not is_file:
-            text = (
-                f"VM .bin 输出目录: {configured_path}    "
-                "请选择具体 .bin 文件"
-            )
+            text = self._tr("bin.display.dir_choose_file", path=configured_path)
             text_color = p["warning"]
         elif is_file:
-            text = f"VM .bin 输出文件: {configured_path}"
+            text = self._tr("bin.display.file", path=configured_path)
         else:
-            text = f"VM .bin 输出目录: {configured_path}"
+            text = self._tr("bin.display.dir", path=configured_path)
 
         self.bin_resolved_label.configure(text=text, text_color=text_color)
 
@@ -1086,7 +1129,7 @@ class ConfigPanel(ctk.CTkFrame):
             log_panel.append(
                 LogEvent(
                     LogIcon.BIN,
-                    f"已自动补全 .bin 相对路径: {rel_path}",
+                    self._tr("bin.autofill.relative", path=rel_path),
                     "success",
                 )
             )
@@ -1109,11 +1152,11 @@ class ConfigPanel(ctk.CTkFrame):
         self.update_bin_path_hint(check_guest=report.ok)
         p = current_palette()
         if report.ok and report.warning_text:
-            self.status_label.configure(text=f"{LogIcon.WARNING} 已保存，有警告", text_color=p["warning"])
+            self.status_label.configure(text=self._tr("ui.config.status.warning", icon=LogIcon.WARNING), text_color=p["warning"])
         elif report.ok:
-            self.status_label.configure(text=f"{LogIcon.SUCCESS} 已保存，检测通过", text_color=p["success"])
+            self.status_label.configure(text=self._tr("ui.config.status.ok", icon=LogIcon.SUCCESS), text_color=p["success"])
         else:
-            self.status_label.configure(text=f"{LogIcon.ERROR} 已保存，检测失败", text_color=p["error"])
+            self.status_label.configure(text=self._tr("ui.config.status.error", icon=LogIcon.ERROR), text_color=p["error"])
         self.after(2000, lambda: self.status_label.configure(text=""))
         return report
 
@@ -1124,13 +1167,13 @@ class ConfigPanel(ctk.CTkFrame):
             return
         details = report.summary
         if report.warning_text:
-            details = f"{details}\n\n警告:\n{report.warning_text}"
+            details = f"{details}\n\n{self._tr('dialog.warning_header')}\n{report.warning_text}"
         if not messagebox.askyesno(
-            "确认全量同步",
-            f"{details}\n\n确认执行全量同步吗？",
+            self._tr("dialog.full_sync.title"),
+            self._tr("dialog.full_sync.message", details=details),
             parent=self.app.window,
         ):
-            self.app.log_panel.append(LogEvent(LogIcon.CANCEL, "已取消全量同步: 用户未确认执行，未修改 VM 工程目录。", "info"))
+            self.app.log_panel.append(LogEvent(LogIcon.CANCEL, self._tr("sync.full.confirm_cancelled"), "info"))
             return
         self.set_config_enabled(False)
         self.app.control.set_full_sync_active(True)
@@ -1140,7 +1183,7 @@ class ConfigPanel(ctk.CTkFrame):
 
     def _cancel_full_sync(self):
         self.app.sync.request_full_sync_cancel()
-        self.fullsync_btn.configure(text="取消中...", state="disabled")
+        self.fullsync_btn.configure(text=self._tr("ui.button.canceling"), state="disabled")
 
     def _run_full_sync(self):
         try:
@@ -1164,7 +1207,7 @@ class ConfigPanel(ctk.CTkFrame):
         p = current_palette()
         if active:
             self.fullsync_btn.configure(
-                text="取消全量同步",
+                text=self._tr("ui.button.cancel_full"),
                 image=self._cancel_icon,
                 command=self._cancel_full_sync,
                 state="normal",
@@ -1174,7 +1217,7 @@ class ConfigPanel(ctk.CTkFrame):
             )
             return
         self.fullsync_btn.configure(
-            text="全量同步",
+            text=self._tr("ui.button.full_sync"),
             image=self._sync_icon,
             command=self._full_sync,
             state="normal" if enabled else "disabled",
@@ -1224,16 +1267,37 @@ class ConfigPanel(ctk.CTkFrame):
             text_color=p["button_text"],
         )
 
+    def refresh_language(self):
+        self._header_text_label.configure(text=self._tr("ui.section.config"))
+        field_spec_by_key = {
+            key: (label_key, placeholder_key)
+            for key, label_key, _mode, placeholder_key in self._FIELD_SPECS
+        }
+        for key, label in self._field_labels.items():
+            label_key, placeholder_key = field_spec_by_key[key]
+            label.configure(text=self._tr(label_key))
+            entry = self._entries.get(key)
+            if entry is not None:
+                entry.configure(placeholder_text=self._tr(placeholder_key))
+        self.save_btn.configure(text=self._tr("ui.button.save_check"))
+        if getattr(self.app.sync, "full_sync_active", False):
+            self._set_full_sync_button_active(True)
+        else:
+            self._set_full_sync_button_active(False, enabled=self.fullsync_btn.cget("state") != "disabled")
+        self.update_bin_path_hint()
+        self._refresh_entry_placeholders()
+
 
 # ── Log Panel ────────────────────────────────────────────────
 
 class LogPanel(ctk.CTkFrame):
     MAX_LINES = 500
 
-    def __init__(self, master):
+    def __init__(self, master, app=None):
         super().__init__(master, fg_color=current_palette()["card"],
                          border_color=current_palette()["border"], border_width=1,
                          corner_radius=8)
+        self.app = app
         self._header_icon = icon_image(
             "list",
             19,
@@ -1245,11 +1309,11 @@ class LogPanel(ctk.CTkFrame):
         self._header_text_label = pack_section_title(
             header,
             self._header_icon,
-            "同步日志",
+            self._tr("ui.log.title"),
         )
 
         self.clear_btn = ctk.CTkButton(
-            header, text="清空", width=52, height=26, corner_radius=6,
+            header, text=self._tr("ui.button.clear"), width=52, height=26, corner_radius=6,
             font=ui_font(size=11),
             fg_color=current_palette()["muted_button"],
             hover_color=current_palette()["muted_hover"],
@@ -1290,6 +1354,11 @@ class LogPanel(ctk.CTkFrame):
 
         self._line_count = 0
         self._tag_mode = None
+
+    def _tr(self, key: str, **kwargs) -> str:
+        if self.app is not None:
+            return app_tr(self.app, key, **kwargs)
+        return Translator().tr(key, **kwargs)
 
     def append(self, event: LogEvent):
         msg_tag = log_message_tag(event.level)
@@ -1357,6 +1426,10 @@ class LogPanel(ctk.CTkFrame):
             text_color=p["text_dim"],
         )
 
+    def refresh_language(self):
+        self._header_text_label.configure(text=self._tr("ui.log.title"))
+        self.clear_btn.configure(text=self._tr("ui.button.clear"))
+
 
 # ── Status Bar ───────────────────────────────────────────────
 
@@ -1366,13 +1439,13 @@ class StatusBar(ctk.CTkFrame):
         self.app = app
 
         self.vm_label = ctk.CTkLabel(
-            self, text="● 检查 VM...", font=ui_font(size=11),
+            self, text=self.app.tr("ui.status.vm.checking"), font=ui_font(size=11),
             text_color=current_palette()["text_dim"],
         )
         self.vm_label.pack(side="left", padx=(10, 16))
 
         self.vmrun_label = ctk.CTkLabel(
-            self, text="vmrun —", font=ui_font(size=11),
+            self, text=self.app.tr("ui.status.vmrun.empty"), font=ui_font(size=11),
             text_color=current_palette()["text_dim"],
         )
         self.vmrun_label.pack(side="left", padx=(0, 16))
@@ -1388,6 +1461,9 @@ class StatusBar(ctk.CTkFrame):
         self.vm_label.configure(text_color=p["text_dim"])
         self.vmrun_label.configure(text_color=p["text_dim"])
         self.poll_label.configure(text_color=p["text_dim"])
+
+    def refresh_language(self):
+        self.app._refresh_status_bar_texts()
 
 
 # ── Main Application Window ──────────────────────────────────
@@ -1420,11 +1496,14 @@ class App:
         self._shutting_down = False
         self._after_jobs = set()
         self._vmrun_status_state = "unknown"
+        self._vm_status_state = "checking"
+        self._status_indicator_state = "ready"
+        self._language_switch_updating = False
 
         self._build_ui()
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Tray — show immediately on startup, persists until "退出"
+        # Tray — show immediately on startup, persists until Exit.
         self._tray_icon = None
         self._tray_thread = None
         self._ensure_tray()
@@ -1444,6 +1523,12 @@ class App:
             self.window.iconphoto(True, *self._window_icon_photos)
 
     # ── Build UI ─────────────────────────────────────────
+
+    def tr(self, key: str, **kwargs) -> str:
+        return Translator(getattr(self.cm.config, "language", "zh")).tr(key, **kwargs)
+
+    def _language_segment_value(self) -> str:
+        return LANGUAGE_SEGMENT_VALUES.get(self.cm.config.language, "中")
 
     def _build_ui(self):
         p = current_palette()
@@ -1466,11 +1551,31 @@ class App:
         ).pack(side="left")
 
         self.status_text = ctk.CTkLabel(
-            title_frame, text="就绪",
+            title_frame, text=self.tr("ui.status.ready"),
             font=ui_font(size=12),
             text_color=p["text_dim"],
         )
         self.status_text.pack(side="right")
+
+        self.language_switch = ctk.CTkSegmentedButton(
+            title_frame,
+            values=["中", "EN"],
+            width=74,
+            height=24,
+            corner_radius=6,
+            font=ui_font(size=11),
+            fg_color=p["muted_button"],
+            selected_color=p["accent"],
+            selected_hover_color=p["accent_hover"],
+            unselected_color=p["muted_button"],
+            unselected_hover_color=p["muted_hover"],
+            text_color=p["button_text"],
+            command=self._on_language_selected,
+        )
+        self.language_switch.pack(side="right", padx=(0, 10))
+        self._language_switch_updating = True
+        self.language_switch.set(self._language_segment_value())
+        self._language_switch_updating = False
 
         # Control panel (fixed)
         self.control = ControlPanel(self.window, self)
@@ -1490,7 +1595,7 @@ class App:
         self.config_panel = ConfigPanel(self.scroll_area.inner, self)
         self.config_panel.pack(fill="x", padx=14, pady=(4, 4))
 
-        self.log_panel = LogPanel(self.scroll_area.inner)
+        self.log_panel = LogPanel(self.scroll_area.inner, self)
         self.log_panel.pack(fill="x", padx=14, pady=(0, 4))
         self.scroll_area.add_wheel_exclusion(self.log_panel.textbox)
         self.scroll_area.add_wheel_exclusion(
@@ -1506,6 +1611,36 @@ class App:
             self._clear_entry_focus_on_background_click,
             add="+",
         )
+
+    def _on_language_selected(self, value: str):
+        if self._language_switch_updating:
+            return
+        language = SEGMENT_VALUE_LANGUAGES.get(value)
+        if language:
+            self.set_language(language)
+
+    def set_language(self, language: str):
+        language = normalize_language(language)
+        if not language:
+            return
+        if self.cm.config.language != language:
+            self.cm.config.language = language
+            self.cm.save()
+        self._last_preflight_error = ""
+        self._last_preflight_error_time = 0.0
+        self._refresh_all_texts()
+
+    def _refresh_all_texts(self):
+        if hasattr(self, "language_switch"):
+            self._language_switch_updating = True
+            self.language_switch.set(self._language_segment_value())
+            self._language_switch_updating = False
+        self._update_status_indicator(self.sync.running)
+        self.control.refresh_language()
+        self.config_panel.refresh_language()
+        self.log_panel.refresh_language()
+        self.status_bar.refresh_language()
+        self._update_tray_menu()
 
     def _clear_entry_focus_on_background_click(self, event):
         if self._is_text_input_event_widget(getattr(event, "widget", None)):
@@ -1549,6 +1684,14 @@ class App:
         self.window.configure(fg_color=p["bg"])
         self.status_dot.configure(text_color=p["text_dim"])
         self.status_text.configure(text_color=p["text_dim"])
+        self.language_switch.configure(
+            fg_color=p["muted_button"],
+            selected_color=p["accent"],
+            selected_hover_color=p["accent_hover"],
+            unselected_color=p["muted_button"],
+            unselected_hover_color=p["muted_hover"],
+            text_color=p["button_text"],
+        )
         self.scroll_area.scrollbar.configure(
             button_color=p["border"], button_hover_color=p["accent"],
         )
@@ -1605,6 +1748,7 @@ class App:
         self._tray_thread.start()
 
     def _build_tray_menu(self):
+        t = self.tr
         return pystray.Menu(
             pystray.MenuItem(
                 self._tray_status_label,
@@ -1612,7 +1756,7 @@ class App:
                 enabled=False,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("显示窗口", self._tray_show, default=True),
+            pystray.MenuItem(t("tray.show"), self._tray_show, default=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 self._tray_sync_label,
@@ -1620,7 +1764,7 @@ class App:
                 checked=self._tray_sync_checked,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("退出", self._tray_quit),
+            pystray.MenuItem(t("tray.quit"), self._tray_quit),
         )
 
     def _update_tray_menu(self):
@@ -1628,10 +1772,10 @@ class App:
             self._tray_icon.update_menu()
 
     def _tray_sync_label(self, _item=None):
-        return tray_sync_label(self.sync.running)
+        return tray_sync_label(self.sync.running, self.cm.config.language)
 
     def _tray_status_label(self, _item=None):
-        return tray_status_label(self.sync.running)
+        return tray_status_label(self.sync.running, self.cm.config.language)
 
     def _tray_sync_checked(self, _item=None):
         return self.sync.running
@@ -1647,7 +1791,7 @@ class App:
     def _tray_notify_start(self):
         if self._tray_icon and self._tray_notified_close:
             try:
-                self._tray_icon.notify("VM Sync 已在后台运行", "VM Sync")
+                self._tray_icon.notify(app_tr(self, "tray.notify.background"), "VM Sync")
             except Exception:
                 pass
 
@@ -1732,10 +1876,53 @@ class App:
         p = current_palette()
         if running:
             self.status_dot.configure(text_color=p["success"])
-            self.status_text.configure(text="运行中", text_color=p["success"])
+            self.status_text.configure(text=self.tr("ui.status.running"), text_color=p["success"])
+            self._status_indicator_state = "running"
         else:
             self.status_dot.configure(text_color=p["text_dim"])
-            self.status_text.configure(text="已停止", text_color=p["text_dim"])
+            key = "ui.status.ready" if self._status_indicator_state == "ready" else "ui.status.stopped"
+            self.status_text.configure(text=self.tr(key), text_color=p["text_dim"])
+            if self._status_indicator_state != "ready":
+                self._status_indicator_state = "stopped"
+
+    def _refresh_status_bar_texts(self):
+        p = current_palette()
+        vmrun_keys = {
+            "ready": "ui.status.vmrun.ready",
+            "checking": "ui.status.vmrun.checking",
+            "timeout": "ui.status.vmrun.timeout",
+            "unavailable": "ui.status.vmrun.unavailable",
+            "unknown": "ui.status.vmrun.empty",
+        }
+        vm_keys = {
+            "checking": "ui.status.vm.checking",
+            "running": "ui.status.vm.running",
+            "not_running": "ui.status.vm.not_running",
+            "unconfigured": "ui.status.vm.unconfigured",
+            "unknown": "ui.status.vm.unknown",
+        }
+        vmrun_state = getattr(self, "_vmrun_status_state", "unknown")
+        vm_state = getattr(self, "_vm_status_state", "unknown")
+        vmrun_color = {
+            "ready": p["success"],
+            "timeout": p["warning"],
+            "unavailable": p["error"],
+        }.get(vmrun_state, p["text_dim"])
+        vm_color = {
+            "running": p["success"],
+            "not_running": p["warning"],
+        }.get(vm_state, p["text_dim"])
+        self.status_bar.vmrun_label.configure(
+            text=self.tr(vmrun_keys.get(vmrun_state, "ui.status.vmrun.empty")),
+            text_color=vmrun_color,
+        )
+        self.status_bar.vm_label.configure(
+            text=self.tr(vm_keys.get(vm_state, "ui.status.vm.unknown")),
+            text_color=vm_color,
+        )
+        self.status_bar.poll_label.configure(
+            text=self.tr("ui.status.poll", seconds=self.cm.config.poll_interval_sec)
+        )
 
     def _check_vm_status(self):
         if self._shutting_down:
@@ -1744,17 +1931,18 @@ class App:
         vmrun = self.resolve_vmrun_path(save=True)
         if not vmrun:
             self._vmrun_status_state = "unavailable"
+            self._vm_status_state = "unknown"
             self.status_bar.vmrun_label.configure(
-                text="vmrun 不可用", text_color=p["error"]
+                text=self.tr("ui.status.vmrun.unavailable"), text_color=p["error"]
             )
             self.status_bar.vm_label.configure(
-                text="○ VM 状态未知", text_color=p["text_dim"]
+                text=self.tr("ui.status.vm.unknown"), text_color=p["text_dim"]
             )
         else:
             if getattr(self, "_vmrun_status_state", "unknown") == "unknown":
                 self._vmrun_status_state = "checking"
                 self.status_bar.vmrun_label.configure(
-                    text="vmrun 检查中...", text_color=p["text_dim"]
+                    text=self.tr("ui.status.vmrun.checking"), text_color=p["text_dim"]
                 )
             if not self._status_check_running:
                 self._status_check_running = True
@@ -1766,7 +1954,7 @@ class App:
 
         interval = self.cm.config.poll_interval_sec
         self.status_bar.poll_label.configure(
-            text=f"轮询间隔 {interval}s"
+            text=self.tr("ui.status.poll", seconds=interval)
         )
 
         # Re-check every 10 seconds
@@ -1793,30 +1981,34 @@ class App:
                 vmx = self.cm.config.vmx_path
 
             if vmx and normalize_vmx_path(vmx) in running:
+                self._vm_status_state = "running"
                 self.status_bar.vm_label.configure(
-                    text="● VM 运行中", text_color=p["success"]
+                    text=self.tr("ui.status.vm.running"), text_color=p["success"]
                 )
             elif vmx:
+                self._vm_status_state = "not_running"
                 self.status_bar.vm_label.configure(
-                    text="○ VM 未运行", text_color=p["warning"]
+                    text=self.tr("ui.status.vm.not_running"), text_color=p["warning"]
                 )
             else:
+                self._vm_status_state = "unconfigured"
                 self.status_bar.vm_label.configure(
-                    text="○ 未配置 VMX", text_color=p["text_dim"]
+                    text=self.tr("ui.status.vm.unconfigured"), text_color=p["text_dim"]
                 )
             self.status_bar.vmrun_label.configure(
-                text="vmrun 就绪", text_color=p["success"]
+                text=self.tr("ui.status.vmrun.ready"), text_color=p["success"]
             )
             self._vmrun_status_state = "ready"
         else:
-            is_timeout = "超时" in result.error
+            is_timeout = "超时" in result.error or "timeout" in result.error.lower()
             self.status_bar.vmrun_label.configure(
-                text="vmrun 检查超时" if is_timeout else "vmrun 不可用",
+                text=self.tr("ui.status.vmrun.timeout") if is_timeout else self.tr("ui.status.vmrun.unavailable"),
                 text_color=p["warning"] if is_timeout else p["error"],
             )
             self._vmrun_status_state = "timeout" if is_timeout else "unavailable"
+            self._vm_status_state = "unknown"
             self.status_bar.vm_label.configure(
-                text="○ VM 状态未知", text_color=p["text_dim"]
+                text=self.tr("ui.status.vm.unknown"), text_color=p["text_dim"]
             )
 
     # ── Event Polling ────────────────────────────────────
@@ -1854,7 +2046,7 @@ class App:
     def _on_bin_ready(self, filename: str):
         if self._tray_icon:
             try:
-                self._tray_icon.notify(f"固件已就绪: {filename}", "VM Sync")
+                self._tray_icon.notify(app_tr(self, "tray.notify.bin_ready", filename=filename), "VM Sync")
             except Exception:
                 pass
 
@@ -1862,7 +2054,7 @@ class App:
         if self._tray_icon:
             try:
                 self._tray_icon.notify(
-                    f"固件内容未变化，已跳过覆盖: {filename}",
+                    app_tr(self, "tray.notify.bin_unchanged", filename=filename),
                     "VM Sync",
                 )
             except Exception:
@@ -1900,27 +2092,35 @@ class App:
                 and now - self._last_preflight_error_time < 10
             )
             if not is_repeat:
-                self.log_panel.append(LogEvent(LogIcon.ERROR, f"路径预检失败:\n{report.error_text}", "error"))
+                self.log_panel.append(LogEvent(
+                    LogIcon.ERROR,
+                    self.tr("ui.preflight.error", message=report.error_text),
+                    "error",
+                ))
                 self._last_preflight_error = report.error_text
                 self._last_preflight_error_time = now
             if show_dialog:
                 messagebox.showerror(
-                    "路径预检失败",
+                    self.tr("dialog.preflight.error.title"),
                     report.error_text,
                     parent=self.window,
                 )
             return report
 
         if report.warning_text:
-            self.log_panel.append(LogEvent(LogIcon.WARNING, f"路径预检警告:\n{report.warning_text}", "warning"))
+            self.log_panel.append(LogEvent(
+                LogIcon.WARNING,
+                self.tr("ui.preflight.warning", message=report.warning_text),
+                "warning",
+            ))
             if show_dialog:
                 messagebox.showwarning(
-                    "路径预检警告",
+                    self.tr("dialog.preflight.warning.title"),
                     report.warning_text,
                     parent=self.window,
                 )
         else:
-            self.log_panel.append(LogEvent(LogIcon.SUCCESS, "路径预检通过", "success"))
+            self.log_panel.append(LogEvent(LogIcon.SUCCESS, self.tr("ui.preflight.ok"), "success"))
         self._last_preflight_error = ""
         self._last_preflight_error_time = 0.0
         return report

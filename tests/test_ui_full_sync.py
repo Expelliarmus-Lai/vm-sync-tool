@@ -3,6 +3,7 @@ import tkinter as tk
 import unittest
 from types import SimpleNamespace
 
+from i18n import Translator
 from ui import App, AutoScrollFrame, ConfigPanel, ControlPanel, DARK, LIGHT
 
 
@@ -15,28 +16,34 @@ class FullSyncUiTests(unittest.TestCase):
     def test_full_sync_ui_uses_full_sync_label(self):
         source = inspect.getsource(ConfigPanel)
 
-        self.assertIn("全量同步", source)
+        self.assertEqual("全量同步", Translator("zh").tr("ui.button.full_sync"))
+        self.assertIn("ui.button.full_sync", source)
         self.assertNotIn("首次同步", source)
+
+    def test_title_bar_has_language_switch(self):
+        source = inspect.getsource(App._build_ui)
+
+        self.assertIn("CTkSegmentedButton", source)
+        self.assertIn("_on_language_selected", source)
+        self.assertIn("set_language", inspect.getsource(App))
 
     def test_config_uses_firmware_return_directory_label(self):
         source = inspect.getsource(ConfigPanel)
 
-        self.assertIn("固件回传目录", source)
-        self.assertNotIn("宿主机输出路径", source)
+        self.assertEqual("固件回传目录", Translator("zh").tr("ui.config.field.host_output"))
+        self.assertEqual("Firmware return folder", Translator("en").tr("ui.config.field.host_output"))
+        self.assertIn("ui.config.field.host_output", source)
 
     def test_config_placeholders_are_short_and_specific(self):
-        source = inspect.getsource(ConfigPanel._build)
+        zh = Translator("zh")
 
-        for placeholder in (
-            "当前运行 VM 的 .vmx",
-            "VM Windows 登录用户名",
-            "VM Windows 登录密码",
-            "宿主机 Keil 工程根目录",
-            "VM 内工程根目录，如 C:\\\\project",
-            "相对 VM 工程，如 Output\\\\RL6492",
-            "宿主机固件回传目录",
-        ):
-            self.assertIn(placeholder, source)
+        self.assertEqual("当前运行 VM 的 .vmx", zh.tr("ui.config.placeholder.vmx"))
+        self.assertEqual("VM Windows 登录用户名", zh.tr("ui.config.placeholder.vm_user"))
+        self.assertEqual("VM Windows 登录密码", zh.tr("ui.config.placeholder.vm_password"))
+        self.assertEqual("宿主机 Keil 工程根目录", zh.tr("ui.config.placeholder.host_project"))
+        self.assertEqual(r"VM 内工程根目录，如 C:\project", zh.tr("ui.config.placeholder.vm_project"))
+        self.assertEqual(r"相对 VM 工程，如 Output\RL6492", zh.tr("ui.config.placeholder.bin"))
+        self.assertEqual("宿主机固件回传目录", zh.tr("ui.config.placeholder.host_output"))
 
     def test_config_panel_refreshes_empty_placeholders_after_build(self):
         source = inspect.getsource(ConfigPanel._build)
@@ -188,7 +195,8 @@ class FullSyncUiTests(unittest.TestCase):
             self.assertIn(f"LogIcon.{icon_name}", save_source)
         self.assertNotIn('"✓', save_source)
         self.assertNotIn('"✗', save_source)
-        self.assertIn("就绪 ✓", control_source)
+        self.assertEqual(".bin    就绪 ✓", Translator("zh").tr("ui.bin.ready"))
+        self.assertIn("ui.bin.ready", control_source)
 
     def test_main_window_starts_large_and_has_no_small_max_size_cap(self):
         source = inspect.getsource(App.__init__)
