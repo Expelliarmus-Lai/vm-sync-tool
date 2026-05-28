@@ -4,6 +4,8 @@ Language: [中文](README.md) | [English](README.en.md)
 
 VM Sync Tool is a Windows desktop utility for synchronizing a Keil firmware project between a host machine and a VMware Workstation virtual machine. It operates VM files through VMware `vmrun.exe` and VMware Tools, so it does not rely on shared folders, network drives, or a VM network adapter.
 
+VM Sync Tool 是一个用于在宿主机和 VMware 虚拟机之间同步 Keil 固件工程，并自动回传 `.bin` 固件的 Windows 桌面工具。
+
 Typical workflow:
 
 1. Edit the Keil project source code on the host machine.
@@ -40,7 +42,9 @@ This tool does not install VMware Workstation, VMware Tools, or Keil, and it doe
 
 ## Usage Entry Points
 
-Regular users should download the folder-based release package from the project's release page. The release package should look like this:
+Regular users should download the release package: [VM-Sync-v1.0.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.0.0/VM-Sync-v1.0.0.zip).
+
+You can also open [GitHub Releases](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/latest) for the latest version. The release package should look like this:
 
 ```text
 VM Sync/
