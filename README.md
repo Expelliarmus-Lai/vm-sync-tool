@@ -47,6 +47,8 @@ VM Sync/
   VM Sync.exe
   _internal/
   README.md
+  README.en.md
+  LICENSE
   config.example.json
 ```
 

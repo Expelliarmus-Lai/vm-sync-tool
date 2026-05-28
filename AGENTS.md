@@ -54,6 +54,7 @@ Full local workspace layout:
 vm-sync-tool/
   .gitignore                                      tracked
   AGENTS.md                                      tracked, local AI/maintainer context
+  LICENSE                                        tracked, MIT license
   README.md                                      tracked, Chinese GitHub/developer README
   README.en.md                                   tracked, English GitHub/developer README
   docs/
@@ -86,6 +87,7 @@ vm-sync-tool/
       _internal/                                 ignored, bundled runtime/dependencies
       README.md                                  ignored, generated Chinese user guide
       README.en.md                               ignored, generated English user guide
+      LICENSE                                    ignored, copied MIT license
       config.example.json                        ignored, copied public config template
   vmrun_probe_result.txt                         ignored, local probe output if generated
   __vm_sync_probe_*.txt                          ignored, temporary probe output if generated
@@ -98,6 +100,7 @@ Tracked files that belong in the source repository:
 |------|---------|
 | `.gitignore` | Excludes local config, build output, caches, probe output, and editor/OS noise |
 | `AGENTS.md` | AI/maintainer context, project rules, architecture notes, and verification commands |
+| `LICENSE` | MIT license text |
 | `README.md` | Chinese GitHub/developer-facing project overview |
 | `README.en.md` | English GitHub/developer-facing project overview |
 | `docs/USER_GUIDE.md` | Chinese end-user guide copied to release `README.md` |
@@ -225,10 +228,11 @@ dist\VM Sync\
   _internal\
   README.md
   README.en.md
+  LICENSE
   config.example.json
 ```
 
-- `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md` and `docs/USER_GUIDE.en.md` to release `README.en.md`.
+- `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md`, `docs/USER_GUIDE.en.md` to release `README.en.md`, and `LICENSE` to the release folder.
 - The build script rewrites guide language links from `USER_GUIDE*.md` to `README*.md` so links work inside the release package.
 - Do not commit `dist/`, `build/`, `config.json`, `__pycache__/`, or `vmrun_probe_result.txt`.
 - `config.example.json` stays tracked because it is safe to share and documents the public config shape.
