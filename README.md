@@ -6,6 +6,8 @@ Windows GUI for VMware Keil firmware sync and `.bin` return.
 
 VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Workstation 虚拟机之间同步 Keil 固件工程。工具通过 VMware `vmrun.exe` 和 VMware Tools 操作虚拟机文件，不依赖共享文件夹、网络盘或虚拟机网卡。
 
+本软件由作者在 Codex 和 Claude Code 辅助下编写、调试和整理文档。
+
 典型流程：
 
 1. 在宿主机编辑 Keil 工程源码。
