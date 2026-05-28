@@ -30,6 +30,9 @@ class SyncManagerTests(unittest.TestCase):
         for icon in legacy_icons:
             self.assertNotIn(icon, source)
 
+    def test_firmware_ready_log_uses_fire_icon(self):
+        self.assertEqual("🔥", syncer.LogIcon.FIRMWARE)
+
     def test_full_sync_cancel_log_uses_cancel_emoji(self):
         manager, _cm = self._manager()
 

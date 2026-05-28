@@ -42,7 +42,7 @@ class LogIcon:
     PACKAGE = "📦"
     TOOL = "🔧"
     CLEANUP = "🧹"
-    FIRMWARE = "⚡"
+    FIRMWARE = "🔥"
     BIN = "🧾"
     FILE = "📄"
 
