@@ -1117,14 +1117,22 @@ class SyncManagerTests(unittest.TestCase):
 
             manager._copy_queue = queue.Queue()
             host_file.write_text("int main(void) { return 1; }", encoding="utf-8")
+            run_token = manager._run_token
             manager._on_file_changed(str(host_file))
             manager._on_file_changed(str(host_file))
             time.sleep((cm.config.debounce_ms / 1000.0) + 0.2)
+            queued_tokens = []
             while not manager._copy_queue.empty():
-                queued.append(manager._copy_queue.get_nowait())
+                item = manager._copy_queue.get_nowait()
+                if isinstance(item, tuple):
+                    queued_tokens.append(item[0])
+                    queued.append(item[1])
+                else:
+                    queued.append(item)
             manager.stop()
 
         self.assertEqual([str(host_file)], queued)
+        self.assertEqual([run_token], queued_tokens)
 
     def test_incremental_timeout_suspends_uploads_and_clears_queue(self):
         manager, cm = self._manager()
@@ -1200,6 +1208,80 @@ class SyncManagerTests(unittest.TestCase):
         command_text = "\n".join(" ".join(cmd) for cmd in commands)
         self.assertIn("Move-Item", command_text)
         self.assertIn(r"C:\project\Src\main.c", command_text)
+
+    def test_late_incremental_copy_from_stale_run_does_not_move_to_final_path(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            host_file = host_root / "Src" / "main.c"
+            host_file.parent.mkdir()
+            host_file.write_text("int main(void) { return 0; }", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.host_project_path = host
+            cm.config.vm_project_path = r"C:\project"
+            manager._running = True
+            manager._run_token = 1
+            commands = []
+
+            def fake_run(cmd, **_kwargs):
+                commands.append(cmd)
+                if "directoryExistsInGuest" in cmd:
+                    return Completed(stdout="The directory exists.", returncode=0)
+                if "CopyFileFromHostToGuest" in cmd:
+                    manager._running = True
+                    manager._stop_requested = False
+                    manager._run_token = 2
+                    return Completed(returncode=0)
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run):
+                manager._do_copy_to_vm(str(host_file), run_token=1)
+
+        command_text = "\n".join(" ".join(cmd) for cmd in commands)
+        self.assertIn("CopyFileFromHostToGuest", command_text)
+        self.assertNotIn("Move-Item", command_text)
+        self.assertEqual(0, manager.synced_count)
+
+    def test_late_bin_copy_from_stale_run_does_not_overwrite_host_output(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            host_out = Path(out) / "firmware.bin"
+            host_out.write_bytes(b"old-firmware")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+            manager._running = True
+            manager._run_token = 1
+
+            def fake_run(cmd, **_kwargs):
+                if "CopyFileFromGuestToHost" in cmd:
+                    Path(cmd[-1]).write_bytes(b"new-firmware")
+                    manager._running = True
+                    manager._stop_requested = False
+                    manager._run_token = 2
+                return Completed(returncode=0)
+
+            with patch.object(
+                manager,
+                "_resolve_vm_bin_cached",
+                return_value=(r"C:\project\Output\firmware.bin", "firmware.bin"),
+            ), patch.object(
+                manager,
+                "_get_guest_file_state",
+                return_value=None,
+            ), patch("syncer.subprocess.run", side_effect=fake_run):
+                manager._check_bin(run_token=1)
+
+            self.assertEqual(b"old-firmware", host_out.read_bytes())
+            self.assertFalse(manager.bin_ready)
+            self.assertTrue(manager.event_queue.empty())
 
     def test_full_sync_cancel_after_upload_cleans_guest_temp_paths(self):
         manager, cm = self._manager()

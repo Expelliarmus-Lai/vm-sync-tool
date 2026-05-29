@@ -165,6 +165,7 @@ class SyncManager:
         self._last_bin_missing_log_time = 0.0
         self._synced_count = 0
         self._bin_ready = False
+        self._run_token = 0
 
     def _tr(self, key: str, **kwargs) -> str:
         return Translator(self.config.config.language).tr(key, **kwargs)
@@ -210,16 +211,18 @@ class SyncManager:
         self._stop_requested = False
         self._incremental_sync_suspended = False
         self._prime_host_file_signatures()
+        run_token = self._advance_run_token()
         self._running = True
-        self._start_copy_worker()
-        self._start_observer()
-        self._start_poller()
+        self._start_copy_worker(run_token)
+        self._start_observer(run_token)
+        self._start_poller(run_token)
         self._emit("info", LogIcon.START, self._tr("sync.service_started"))
         return True
 
     def stop(self):
         self._stop_requested = True
         self._running = False
+        self._advance_run_token()
         if self._debouncer:
             self._debouncer.cancel_all()
         self._drain_copy_queue()
@@ -305,6 +308,15 @@ class SyncManager:
         self._startup_bin_baseline_pending = False
         self._bin_ready = False
 
+    def _advance_run_token(self) -> int:
+        self._run_token += 1
+        return self._run_token
+
+    def _is_current_run_token(self, run_token: int | None) -> bool:
+        if self._stop_requested:
+            return False
+        return run_token is None or run_token == self._run_token
+
     def _defer_startup_bin_baseline(self):
         cfg = self.config.config
         project = self._project()
@@ -355,7 +367,7 @@ class SyncManager:
 
     # ── Observer (Host → VM) ───────────────────────────────
 
-    def _start_observer(self):
+    def _start_observer(self, run_token: int | None = None):
         host_root = self._project().host_project_path
         if not host_root or not Path(host_root).exists():
             self._emit("warning", LogIcon.WARNING, self._tr("sync.host_invalid", path=host_root))
@@ -363,7 +375,7 @@ class SyncManager:
 
         self._debouncer = Debouncer(
             self.config.config.debounce_ms,
-            self._enqueue_copy_to_vm,
+            lambda host_path: self._enqueue_copy_to_vm(host_path, run_token),
         )
         handler = ProjectFileHandler(self)
         self._observer = Observer()
@@ -378,11 +390,11 @@ class SyncManager:
             return
         self._debouncer.trigger(host_path, host_path)
 
-    def _start_copy_worker(self):
+    def _start_copy_worker(self, run_token: int | None = None):
         self._copy_queue = queue.Queue()
         self._copy_pending = set()
         self._copy_worker_thread = threading.Thread(
-            target=self._copy_worker_loop, daemon=True
+            target=self._copy_worker_loop, args=(run_token,), daemon=True
         )
         self._copy_worker_thread.start()
 
@@ -396,8 +408,10 @@ class SyncManager:
         if not worker.is_alive():
             self._copy_worker_thread = None
 
-    def _enqueue_copy_to_vm(self, host_path: str):
+    def _enqueue_copy_to_vm(self, host_path: str, run_token: int | None = None):
         if not self._running or self._incremental_sync_suspended:
+            return
+        if not self._is_current_run_token(run_token):
             return
         if not self._copy_queue:
             return
@@ -407,7 +421,7 @@ class SyncManager:
             if host_path in self._copy_pending:
                 return
             self._copy_pending.add(host_path)
-        self._copy_queue.put(host_path)
+        self._copy_queue.put((run_token, host_path))
 
     def _watched_extensions(self) -> set[str]:
         return {ext.lower() for ext in self.config.config.watch_extensions}
@@ -459,8 +473,8 @@ class SyncManager:
             self._host_file_signatures[key] = signature
         return True
 
-    def _copy_worker_loop(self):
-        while self._running:
+    def _copy_worker_loop(self, run_token: int | None = None):
+        while self._running and self._is_current_run_token(run_token):
             if self._incremental_sync_suspended:
                 self._drain_copy_queue()
                 return
@@ -468,14 +482,19 @@ class SyncManager:
             if not copy_queue:
                 return
             try:
-                host_path = copy_queue.get(timeout=0.2)
+                item = copy_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+            item_token, host_path = item if isinstance(item, tuple) else (run_token, item)
             with self._copy_lock:
                 self._copy_pending.discard(host_path)
             try:
-                if self._running and not self._incremental_sync_suspended:
-                    self._do_copy_to_vm(host_path)
+                if (
+                    self._running
+                    and not self._incremental_sync_suspended
+                    and self._is_current_run_token(item_token)
+                ):
+                    self._do_copy_to_vm(host_path, run_token=item_token)
             finally:
                 try:
                     copy_queue.task_done()
@@ -507,8 +526,10 @@ class SyncManager:
             self._tr("sync.incremental_suspended", filename=Path(host_path).name),
         )
 
-    def _do_copy_to_vm(self, host_path: str):
+    def _do_copy_to_vm(self, host_path: str, run_token: int | None = None):
         if not self._running:
+            return
+        if not self._is_current_run_token(run_token):
             return
         if self._incremental_sync_suspended:
             return
@@ -529,6 +550,8 @@ class SyncManager:
             self._emit("info", LogIcon.UPLOAD, self._tr("sync.to_vm", path=rel))
 
             mkdir = self._ensure_guest_directory(vm_dir)
+            if not self._is_current_run_token(run_token) or not self._running:
+                return
             if mkdir.returncode != 0:
                 err = self._vmrun_error(mkdir)
                 self._emit("error", LogIcon.ERROR, self._tr("sync.mkdir_failed", path=rel, error=err))
@@ -545,10 +568,21 @@ class SyncManager:
             )
 
             if result.returncode == 0:
-                if self._stop_requested or not self._running:
+                if (
+                    self._stop_requested
+                    or not self._running
+                    or not self._is_current_run_token(run_token)
+                ):
                     self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
                     return
                 move = self._move_guest_file(vm_tmp, vm_dest, timeout=15)
+                if (
+                    self._stop_requested
+                    or not self._running
+                    or not self._is_current_run_token(run_token)
+                ):
+                    self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
+                    return
                 if move.returncode != 0:
                     err = self._vmrun_error(move)
                     if not self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False):
@@ -559,19 +593,23 @@ class SyncManager:
                 self._emit("success", LogIcon.SUCCESS, self._tr("sync.to_vm_done", path=rel))
             else:
                 self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
+                if not self._is_current_run_token(run_token) or not self._running:
+                    return
                 err = result.stderr.strip() or "unknown error"
                 self._emit("error", LogIcon.ERROR, self._tr("sync.to_vm_failed", path=rel, error=err))
 
         except subprocess.TimeoutExpired:
-            self._suspend_incremental_uploads(host_path)
+            if self._is_current_run_token(run_token) and self._running:
+                self._suspend_incremental_uploads(host_path)
         except Exception as e:
-            self._emit("error", LogIcon.ERROR, self._tr("sync.file_exception", filename=Path(host_path).name, error=e))
+            if self._is_current_run_token(run_token) and self._running:
+                self._emit("error", LogIcon.ERROR, self._tr("sync.file_exception", filename=Path(host_path).name, error=e))
 
     # ── Poller (VM → Host, .bin) ───────────────────────────
 
-    def _start_poller(self):
+    def _start_poller(self, run_token: int | None = None):
         self._poller_thread = threading.Thread(
-            target=self._poll_loop, daemon=True
+            target=self._poll_loop, args=(run_token,), daemon=True
         )
         self._poller_thread.start()
 
@@ -585,21 +623,27 @@ class SyncManager:
         if not poller.is_alive():
             self._poller_thread = None
 
-    def _poll_loop(self):
-        while self._running:
+    def _poll_loop(self, run_token: int | None = None):
+        while self._running and self._is_current_run_token(run_token):
             try:
-                self._check_bin()
+                if run_token is None:
+                    self._check_bin()
+                else:
+                    self._check_bin(run_token=run_token)
             except Exception as e:
-                self._emit_bin_warning(self._tr("sync.bin_poll_exception", error=e))
+                if run_token is None or (
+                    self._is_current_run_token(run_token) and self._running
+                ):
+                    self._emit_bin_warning(self._tr("sync.bin_poll_exception", error=e))
             # Sleep in small chunks so we can respond to stop() quickly
             interval = self.config.config.poll_interval_sec
             for _ in range(interval * 2):
-                if not self._running:
+                if not self._running or not self._is_current_run_token(run_token):
                     return
                 time.sleep(0.5)
 
-    def _check_bin(self):
-        if self._stop_requested:
+    def _check_bin(self, run_token: int | None = None):
+        if self._stop_requested or not self._is_current_run_token(run_token):
             self._bin_ready = False
             return
         vmx = self.config.config.vmx_path
@@ -616,7 +660,7 @@ class SyncManager:
             / bin_filename
         )
         guest_state = self._get_guest_file_state(vm_bin, vmx)
-        if self._stop_requested:
+        if self._stop_requested or not self._is_current_run_token(run_token):
             self._bin_ready = False
             return
         if guest_state is not None:
@@ -694,7 +738,7 @@ class SyncManager:
             ],
             timeout=30,
         )
-        if self._stop_requested:
+        if self._stop_requested or not self._is_current_run_token(run_token):
             tmp_path.unlink(missing_ok=True)
             self._bin_ready = False
             return
@@ -715,6 +759,9 @@ class SyncManager:
                 self._startup_bin_signature = None
             if signature == self._last_bin_signature and host_out.exists():
                 tmp_path.unlink(missing_ok=True)
+                if not self._is_current_run_token(run_token):
+                    self._bin_ready = False
+                    return
                 unchanged_log_key = state_key
                 if state_key is not None:
                     self._last_bin_state = state_key
@@ -724,6 +771,10 @@ class SyncManager:
                 self._bin_ready = True
                 return
 
+            if not self._is_current_run_token(run_token):
+                tmp_path.unlink(missing_ok=True)
+                self._bin_ready = False
+                return
             tmp_path.replace(host_out)
             self._last_bin_signature = signature
             if state_key is not None:
