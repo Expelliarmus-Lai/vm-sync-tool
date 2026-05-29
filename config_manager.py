@@ -1,13 +1,22 @@
-"""Configuration management for VM Sync Tool."""
+﻿"""Configuration management for VM Sync Tool."""
 
 import json
 import ntpath
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import List
+from typing import List, Optional
 
 from i18n import detect_system_language, normalize_language
 from i18n import Translator
+
+
+@dataclass
+class ProjectConfig:
+    enabled: bool = False
+    host_project_path: str = ""
+    vm_project_path: str = ""
+    vm_bin_relative_path: str = ""
+    host_output_path: str = ""
 
 
 @dataclass
@@ -16,10 +25,6 @@ class Config:
     vmx_path: str = ""
     vm_guest_user: str = ""
     vm_guest_password: str = ""
-    host_project_path: str = ""
-    vm_project_path: str = ""
-    vm_bin_relative_path: str = ""
-    host_output_path: str = ""
     language: str = ""
     debounce_ms: int = 500
     poll_interval_sec: int = 1
@@ -29,7 +34,32 @@ class Config:
             ".uvprojx", ".uvoptx", ".uvproj", ".uvopt", ".uv2", ".opt"
         ]
     )
+    projects: List[ProjectConfig] = field(default_factory=list)
 
+    # Legacy fields mapping
+    @property
+    def host_project_path(self): return self.projects[0].host_project_path if self.projects else ""
+    @host_project_path.setter
+    def host_project_path(self, val): 
+        if self.projects: self.projects[0].host_project_path = val
+
+    @property
+    def vm_project_path(self): return self.projects[0].vm_project_path if self.projects else ""
+    @vm_project_path.setter
+    def vm_project_path(self, val): 
+        if self.projects: self.projects[0].vm_project_path = val
+
+    @property
+    def vm_bin_relative_path(self): return self.projects[0].vm_bin_relative_path if self.projects else ""
+    @vm_bin_relative_path.setter
+    def vm_bin_relative_path(self, val): 
+        if self.projects: self.projects[0].vm_bin_relative_path = val
+
+    @property
+    def host_output_path(self): return self.projects[0].host_output_path if self.projects else ""
+    @host_output_path.setter
+    def host_output_path(self, val): 
+        if self.projects: self.projects[0].host_output_path = val
 
 class ConfigManager:
     def __init__(self, config_path: str):
@@ -45,15 +75,44 @@ class ConfigManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                
+                old_keys = ["host_project_path", "vm_project_path", "vm_bin_relative_path", "host_output_path"]
+                needs_migration = any(k in data for k in old_keys) and "projects" not in data
+                
                 for key, value in data.items():
-                    if hasattr(self.config, key):
+                    if key == "projects":
+                        self.config.projects = [ProjectConfig(**p) for p in value]
+                    elif hasattr(self.config, key) and key not in old_keys and key != "projects":
                         setattr(self.config, key, value)
+                        
+                if needs_migration:
+                    p = ProjectConfig(
+                        enabled=True,
+                        host_project_path=data.get("host_project_path", ""),
+                        vm_project_path=data.get("vm_project_path", ""),
+                        vm_bin_relative_path=data.get("vm_bin_relative_path", ""),
+                        host_output_path=data.get("host_output_path", "")
+                    )
+                    self.config.projects = [p]
+
+                while len(self.config.projects) < 2:
+                    self.config.projects.append(ProjectConfig(enabled=False))
+
                 changed = self.normalize_paths()
                 changed = self.normalize_runtime_defaults() or changed
-                if changed:
+                if changed or needs_migration:
                     self._save()
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError, TypeError):
+                self._ensure_projects()
                 self._save()
+        else:
+            self._ensure_projects()
+
+    def _ensure_projects(self):
+        while len(self.config.projects) < 2:
+            self.config.projects.append(ProjectConfig(enabled=False))
+        if self.config.projects:
+            self.config.projects[0].enabled = True
 
     def save(self):
         self._save()
@@ -62,63 +121,67 @@ class ConfigManager:
         self.normalize_paths()
         self.normalize_runtime_defaults()
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Avoid writing legacy properties into JSON by extracting __dict__ explicitly
+        config_dict = {
+            "vmrun_path": self.config.vmrun_path,
+            "vmx_path": self.config.vmx_path,
+            "vm_guest_user": self.config.vm_guest_user,
+            "vm_guest_password": self.config.vm_guest_password,
+            "language": self.config.language,
+            "debounce_ms": self.config.debounce_ms,
+            "poll_interval_sec": self.config.poll_interval_sec,
+            "watch_extensions": self.config.watch_extensions,
+            "projects": [asdict(p) for p in self.config.projects]
+        }
         with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(asdict(self.config), f, indent=2, ensure_ascii=False)
+            json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
     def normalize_paths(self) -> bool:
-        before = asdict(self.config)
-        for key in (
-            "vmrun_path",
-            "vmx_path",
-            "host_project_path",
-            "vm_project_path",
-            "host_output_path",
-        ):
+        before = json.dumps({
+            "v": self.config.vmrun_path, "x": self.config.vmx_path,
+            "p": [asdict(p) for p in self.config.projects]
+        })
+        for key in ("vmrun_path", "vmx_path"):
             setattr(
                 self.config,
                 key,
                 _normalize_windows_path(getattr(self.config, key)),
             )
-        self.config.vm_bin_relative_path = _normalize_relative_windows_path(
-            self.config.vm_bin_relative_path
-        )
-        return asdict(self.config) != before
+            
+        for proj in self.config.projects:
+            proj.host_project_path = _normalize_windows_path(proj.host_project_path)
+            proj.vm_project_path = _normalize_windows_path(proj.vm_project_path)
+            proj.host_output_path = _normalize_windows_path(proj.host_output_path)
+            proj.vm_bin_relative_path = _normalize_relative_windows_path(proj.vm_bin_relative_path)
+            
+        after = json.dumps({
+            "v": self.config.vmrun_path, "x": self.config.vmx_path,
+            "p": [asdict(p) for p in self.config.projects]
+        })
+        return before != after
 
     def normalize_runtime_defaults(self) -> bool:
-        before = asdict(self.config)
+        before = json.dumps({"p": self.config.poll_interval_sec, "l": self.config.language, "prj": len(self.config.projects)})
         if self.config.poll_interval_sec == 3:
             self.config.poll_interval_sec = 1
         language = normalize_language(self.config.language)
         if not language:
             language = detect_system_language()
         self.config.language = language
-        return asdict(self.config) != before
+        self._ensure_projects()
+        after = json.dumps({"p": self.config.poll_interval_sec, "l": self.config.language, "prj": len(self.config.projects)})
+        return before != after
 
-    def validate_paths(self) -> dict:
-        t = Translator(self.config.language).tr
-        issues = {}
-        if self.config.host_project_path:
-            host = Path(self.config.host_project_path)
-            if not host.exists():
-                issues["host_project_path"] = t("config.path_missing")
-        if self.config.host_output_path:
-            out = Path(self.config.host_output_path)
-            if not out.exists():
-                issues["host_output_path"] = t("config.path_missing")
-        if self.config.vmx_path:
-            vmx = Path(self.config.vmx_path)
-            if not vmx.exists():
-                issues["vmx_path"] = t("config.vmx_missing")
-        return issues
+    def get_vm_bin_full_path(self, project_index: int = 0) -> str:
+        if project_index < len(self.config.projects):
+            proj = self.config.projects[project_index]
+            return _join_windows_path(proj.vm_project_path, proj.vm_bin_relative_path)
+        return ""
 
-    def get_vm_bin_full_path(self) -> str:
-        return _join_windows_path(
-            self.config.vm_project_path,
-            self.config.vm_bin_relative_path,
-        )
-
-    def get_bin_filename(self) -> str:
-        return ntpath.basename(self.config.vm_bin_relative_path)
+    def get_bin_filename(self, project_index: int = 0) -> str:
+        if project_index < len(self.config.projects):
+            return ntpath.basename(self.config.projects[project_index].vm_bin_relative_path)
+        return ""
 
 
 def _normalize_windows_path(value: str) -> str:

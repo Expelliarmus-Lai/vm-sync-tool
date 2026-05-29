@@ -24,6 +24,7 @@ _CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 GUEST_CMD = r"C:\Windows\System32\cmd.exe"
 GUEST_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 POST_COPY_TIMESTAMP_DRIFT_SUPPRESS_SEC = 10.0
+VMRUN_CALL_LOCK = threading.Lock()
 
 
 class LogIcon:
@@ -126,9 +127,10 @@ class ProjectFileHandler(FileSystemEventHandler):
 class SyncManager:
     """Manages the lifecycle of file sync between Host and VM."""
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, project_index: int = 0):
         self.config_manager = config_manager
         self.config = config_manager
+        self.project_index = project_index
         self.event_queue = queue.Queue()
         self._observer: Observer | None = None
         self._debouncer: Debouncer | None = None
@@ -166,6 +168,12 @@ class SyncManager:
 
     def _tr(self, key: str, **kwargs) -> str:
         return Translator(self.config.config.language).tr(key, **kwargs)
+
+    def _project(self):
+        projects = getattr(self.config.config, "projects", [])
+        if self.project_index < len(projects):
+            return projects[self.project_index]
+        return self.config.config
 
     @property
     def running(self) -> bool:
@@ -232,15 +240,17 @@ class SyncManager:
 
     def preflight_snapshot(self) -> tuple:
         cfg = self.config.config
+        project = self._project()
         return (
             cfg.vmrun_path,
             cfg.vmx_path,
             cfg.vm_guest_user,
             cfg.vm_guest_password,
-            cfg.host_project_path,
-            cfg.vm_project_path,
-            cfg.vm_bin_relative_path,
-            cfg.host_output_path,
+            project.enabled,
+            project.host_project_path,
+            project.vm_project_path,
+            project.vm_bin_relative_path,
+            project.host_output_path,
             cfg.debounce_ms,
             cfg.poll_interval_sec,
             cfg.language,
@@ -263,13 +273,17 @@ class SyncManager:
         preflight_checked: bool = False,
         preflight_snapshot: tuple | None = None,
     ) -> bool:
+        if not getattr(self._project(), "enabled", True):
+            return False
         if not self._can_reuse_preflight(preflight_checked, preflight_snapshot):
-            report = PreflightChecker(self.config.config).check()
+            report = PreflightChecker(self.config.config).check(
+                project_index=self.project_index
+            )
             if not report.ok:
                 self._emit("error", LogIcon.ERROR, self._tr("ui.preflight.error", message=report.error_text))
                 return False
         try:
-            Path(self.config.config.host_output_path).mkdir(parents=True, exist_ok=True)
+            Path(self._project().host_output_path).mkdir(parents=True, exist_ok=True)
         except Exception as e:
             self._emit("error", LogIcon.ERROR, self._tr("sync.create_output_failed", error=e))
             return False
@@ -293,11 +307,12 @@ class SyncManager:
 
     def _defer_startup_bin_baseline(self):
         cfg = self.config.config
+        project = self._project()
         self._startup_bin_baseline_pending = bool(
             cfg.vmrun_path
             and cfg.vmx_path
-            and cfg.vm_project_path
-            and cfg.vm_bin_relative_path
+            and project.vm_project_path
+            and project.vm_bin_relative_path
         )
 
     def _record_startup_bin_state(
@@ -341,7 +356,7 @@ class SyncManager:
     # ── Observer (Host → VM) ───────────────────────────────
 
     def _start_observer(self):
-        host_root = self.config.config.host_project_path
+        host_root = self._project().host_project_path
         if not host_root or not Path(host_root).exists():
             self._emit("warning", LogIcon.WARNING, self._tr("sync.host_invalid", path=host_root))
             return
@@ -419,7 +434,7 @@ class SyncManager:
             return None
 
     def _prime_host_file_signatures(self):
-        root = Path(self.config.config.host_project_path)
+        root = Path(self._project().host_project_path)
         signatures: dict[str, tuple[int, str]] = {}
         if root.exists():
             extensions = self._watched_extensions()
@@ -498,10 +513,11 @@ class SyncManager:
         if self._incremental_sync_suspended:
             return
         try:
-            host_root = Path(self.config.config.host_project_path)
+            project = self._project()
+            host_root = Path(project.host_project_path)
             rel = Path(host_path).relative_to(host_root)
             vm_dest = str(
-                (Path(self.config.config.vm_project_path) / rel).as_posix()
+                (Path(project.vm_project_path) / rel).as_posix()
             ).replace("/", "\\")
             vm_dest_path = PureWindowsPath(vm_dest)
             vm_dir = str(vm_dest_path.parent)
@@ -596,7 +612,7 @@ class SyncManager:
         vm_bin, bin_filename = resolved
 
         host_out = (
-            Path(self.config.config.host_output_path)
+            Path(self._project().host_output_path)
             / bin_filename
         )
         guest_state = self._get_guest_file_state(vm_bin, vmx)
@@ -664,20 +680,19 @@ class SyncManager:
                 return
             state_key = None
 
-        Path(self.config.config.host_output_path).mkdir(parents=True, exist_ok=True)
+        Path(self._project().host_output_path).mkdir(parents=True, exist_ok=True)
         tmp = tempfile.NamedTemporaryFile(
             prefix=".vm_sync_bin_", suffix=".tmp", delete=False,
         )
         tmp_path = Path(tmp.name)
         tmp.close()
 
-        result = subprocess.run(
-            self._vmrun_command([
+        result = self._run_vmrun(
+            [
                 "CopyFileFromGuestToHost",
                 vmx, vm_bin, str(tmp_path),
-            ]),
-            capture_output=True, text=True, timeout=30,
-            creationflags=_CREATE_FLAGS,
+            ],
+            timeout=30,
         )
         if self._stop_requested:
             tmp_path.unlink(missing_ok=True)
@@ -718,7 +733,7 @@ class SyncManager:
             self._bin_ready = True
             self._emit(
                 "success", LogIcon.DOWNLOAD,
-                self._tr("sync.returned_firmware", filename=bin_filename, path=self.config.config.host_output_path)
+                self._tr("sync.returned_firmware", filename=bin_filename, path=self._project().host_output_path)
             )
             self._emit("info", LogIcon.FIRMWARE, self._tr("sync.firmware_ready"))
             # Trigger tray notification
@@ -794,10 +809,11 @@ class SyncManager:
 
     def _bin_target_cache_key(self) -> tuple[str, str, str, str]:
         cfg = self.config.config
+        project = self._project()
         return (
             cfg.vmx_path,
-            cfg.vm_project_path,
-            cfg.vm_bin_relative_path,
+            project.vm_project_path,
+            project.vm_bin_relative_path,
             cfg.vmrun_path,
         )
 
@@ -821,8 +837,8 @@ class SyncManager:
         return self._resolve_vm_bin_cached()
 
     def validate_bin_target(self, emit: bool = False) -> BinTargetCheck:
-        vm_bin = self.config.get_vm_bin_full_path()
-        rel_path = PureWindowsPath(self.config.config.vm_bin_relative_path)
+        vm_bin = self.config.get_vm_bin_full_path(self.project_index)
+        rel_path = PureWindowsPath(self._project().vm_bin_relative_path)
         if rel_path.suffix.lower() == ".bin":
             check = self._validate_explicit_bin_file(vm_bin, emit=emit)
         else:
@@ -918,14 +934,13 @@ class SyncManager:
         return GuestBinListing(True, self._parse_bin_names(result.stdout or ""))
 
     def _guest_file_exists(self, vm_path: str) -> bool:
-        result = subprocess.run(
-            self._vmrun_command([
+        result = self._run_vmrun(
+            [
                 "fileExistsInGuest",
                 self.config.config.vmx_path,
                 vm_path,
-            ]),
-            capture_output=True, text=True, timeout=10,
-            creationflags=_CREATE_FLAGS,
+            ],
+            timeout=10,
         )
         return "file exists" in (result.stdout or "").lower()
 
@@ -939,7 +954,7 @@ class SyncManager:
 
     def _guest_relative_to_project(self, vm_path: str) -> str:
         path = PureWindowsPath(vm_path)
-        project_root = PureWindowsPath(self.config.config.vm_project_path)
+        project_root = PureWindowsPath(self._project().vm_project_path)
         try:
             return str(path.relative_to(project_root))
         except ValueError:
@@ -1141,15 +1156,14 @@ class SyncManager:
         vm_dir = str(Path(vm_path).parent)
         vm_name = Path(vm_path).name
         try:
-            result = subprocess.run(
-                self._vmrun_command([
+            result = self._run_vmrun(
+                [
                     "runProgramInGuest",
                     vmx,
                     GUEST_CMD, "/c",
                     f'dir /T:W "{vm_path}" 2>nul',
-                ]),
-                capture_output=True, text=True, timeout=10,
-                creationflags=_CREATE_FLAGS,
+                ],
+                timeout=10,
             )
             # Parse dir output: date and time
             for line in result.stdout.splitlines():
@@ -1244,11 +1258,12 @@ class SyncManager:
         return "'" + value.replace("'", "''") + "'"
 
     def _run_vmrun(self, args: list[str], timeout: int):
-        return subprocess.run(
-            self._vmrun_command(args),
-            capture_output=True, text=True, timeout=timeout,
-            creationflags=_CREATE_FLAGS,
-        )
+        with VMRUN_CALL_LOCK:
+            return subprocess.run(
+                self._vmrun_command(args),
+                capture_output=True, text=True, timeout=timeout,
+                creationflags=_CREATE_FLAGS,
+            )
 
     def _move_guest_file(self, source: str, destination: str, timeout: int):
         script = (
@@ -1317,6 +1332,7 @@ class SyncManager:
         self._full_sync_cancel.clear()
         self._full_sync_active = True
         cfg = self.config.config
+        project = self._project()
         zip_path = ""
         guest_cleanup: list[tuple[str, bool]] = []
 
@@ -1324,10 +1340,10 @@ class SyncManager:
             if not cfg.vmx_path:
                 self._emit("error", LogIcon.ERROR, self._tr("sync.full.missing_vmx"))
                 return 0
-            if not cfg.host_project_path:
+            if not project.host_project_path:
                 self._emit("error", LogIcon.ERROR, self._tr("sync.full.missing_host"))
                 return 0
-            if not cfg.vm_project_path:
+            if not project.vm_project_path:
                 self._emit("error", LogIcon.ERROR, self._tr("sync.full.missing_vm_project"))
                 return 0
             if not self._has_guest_credentials():
@@ -1335,7 +1351,7 @@ class SyncManager:
                     self._tr("sync.full.missing_credentials")
                 )
 
-            host_root = Path(cfg.host_project_path)
+            host_root = Path(project.host_project_path)
             if not host_root.exists():
                 self._emit("error", LogIcon.ERROR, self._tr("sync.full.host_missing"))
                 return 0
@@ -1357,7 +1373,7 @@ class SyncManager:
                 return self._cancel_full_sync(self._tr("sync.full.cancelled_before_upload"))
 
             self._emit_progress(0.35, self._tr("sync.full.step_create_dir"))
-            mkdir = self._ensure_guest_directory(cfg.vm_project_path)
+            mkdir = self._ensure_guest_directory(project.vm_project_path)
             if mkdir.returncode != 0:
                 err = self._vmrun_error(mkdir)
                 return self._fail_full_sync(self._tr("sync.full.create_dir_failed", error=err))
@@ -1372,8 +1388,8 @@ class SyncManager:
                     (guest_stage_dir, True),
                 ])
             else:
-                guest_zip = self._guest_path_join(cfg.vm_project_path, "__vm_sync_fullsync.zip")
-                guest_stage_dir = self._guest_path_join(cfg.vm_project_path, "__vm_sync_fullsync_extract")
+                guest_zip = self._guest_path_join(project.vm_project_path, "__vm_sync_fullsync.zip")
+                guest_stage_dir = self._guest_path_join(project.vm_project_path, "__vm_sync_fullsync_extract")
                 guest_cleanup.extend([
                     (guest_zip, False),
                     (guest_stage_dir, True),
@@ -1426,9 +1442,9 @@ class SyncManager:
             self._emit_progress(0.86, self._tr("sync.full.step_cover"))
             cover_script = (
                 "$ErrorActionPreference='Stop'; "
-                f"New-Item -ItemType Directory -Force -Path {self._ps_literal(cfg.vm_project_path)} | Out-Null; "
+                f"New-Item -ItemType Directory -Force -Path {self._ps_literal(project.vm_project_path)} | Out-Null; "
                 f"Copy-Item -LiteralPath {self._ps_literal(self._guest_path_join(guest_stage_dir, '*'))} "
-                f"-Destination {self._ps_literal(cfg.vm_project_path)} -Recurse -Force"
+                f"-Destination {self._ps_literal(project.vm_project_path)} -Recurse -Force"
             )
             cover = self._run_vmrun(
                 [

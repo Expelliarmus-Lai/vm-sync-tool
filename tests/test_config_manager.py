@@ -1,4 +1,4 @@
-import json
+﻿import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,7 +21,7 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
             cm = ConfigManager(str(config_path))
             cm.config.vmrun_path = "C:/Program Files (x86)/VMware/VMware Workstation/vmrun.exe"
             cm.config.vmx_path = "D:/windows/Windows 10 VM_HW/Windows 10 x64/Windows 10 x64.vmx"
-            cm.config.host_project_path = "C:/Users/Administrator/Desktop/同步测试/js_2556vd_6282"
+            cm.config.host_project_path = "C:/Users/Administrator/Desktop/鍚屾娴嬭瘯/js_2556vd_6282"
             cm.config.vm_project_path = "C:/Users/h/Desktop/js_2556vd_6282"
             cm.config.vm_bin_relative_path = "/Output/RL6492"
             cm.config.host_output_path = "C:/Users/Administrator/Desktop"
@@ -39,15 +39,15 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
             data["vmx_path"],
         )
         self.assertEqual(
-            r"C:\Users\Administrator\Desktop\同步测试\js_2556vd_6282",
-            data["host_project_path"],
+            r"C:\Users\Administrator\Desktop\鍚屾娴嬭瘯\js_2556vd_6282",
+            data["projects"][0]["host_project_path"],
         )
         self.assertEqual(
             r"C:\Users\h\Desktop\js_2556vd_6282",
-            data["vm_project_path"],
+            data["projects"][0]["vm_project_path"],
         )
-        self.assertEqual(r"Output\RL6492", data["vm_bin_relative_path"])
-        self.assertEqual(r"C:\Users\Administrator\Desktop", data["host_output_path"])
+        self.assertEqual(r"Output\RL6492", data["projects"][0]["vm_bin_relative_path"])
+        self.assertEqual(r"C:\Users\Administrator\Desktop", data["projects"][0]["host_output_path"])
 
     def test_load_rewrites_legacy_mixed_separator_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,7 +71,7 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
 
         self.assertEqual(r"C:\VMware\vmrun.exe", cm.config.vmrun_path)
         self.assertEqual(r"D:\VMs\dev\dev.vmx", data["vmx_path"])
-        self.assertEqual(r"Output\RL6492", data["vm_bin_relative_path"])
+        self.assertEqual(r"Output\RL6492", data["projects"][0]["vm_bin_relative_path"])
 
     def test_load_upgrades_legacy_bin_poll_interval(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,6 +87,35 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
         self.assertEqual(1, cm.config.poll_interval_sec)
         self.assertEqual(1, data["poll_interval_sec"])
 
+    def test_load_adds_detected_language_to_legacy_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({}), encoding="utf-8")
+
+            with patch("config_manager.detect_system_language", return_value="en"):
+                cm = ConfigManager(str(config_path))
+
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("en", cm.config.language)
+        self.assertEqual("en", data["language"])
+
+    def test_invalid_language_falls_back_to_detected_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps({"language": "fr"}),
+                encoding="utf-8",
+            )
+
+            with patch("config_manager.detect_system_language", return_value="zh"):
+                cm = ConfigManager(str(config_path))
+
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("zh", cm.config.language)
+        self.assertEqual("zh", data["language"])
+
     def test_absolute_bin_path_stays_absolute_for_preflight_rejection(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
@@ -96,30 +125,6 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
             cm.save()
 
         self.assertEqual(r"C:\Output\firmware.bin", cm.config.vm_bin_relative_path)
-
-    def test_load_adds_detected_language_to_legacy_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "config.json"
-            config_path.write_text("{}", encoding="utf-8")
-
-            with patch("config_manager.detect_system_language", return_value="en"):
-                cm = ConfigManager(str(config_path))
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-
-        self.assertEqual("en", cm.config.language)
-        self.assertEqual("en", data["language"])
-
-    def test_invalid_language_falls_back_to_detected_language(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "config.json"
-            config_path.write_text(json.dumps({"language": "fr"}), encoding="utf-8")
-
-            with patch("config_manager.detect_system_language", return_value="zh"):
-                cm = ConfigManager(str(config_path))
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-
-        self.assertEqual("zh", cm.config.language)
-        self.assertEqual("zh", data["language"])
 
 
 if __name__ == "__main__":

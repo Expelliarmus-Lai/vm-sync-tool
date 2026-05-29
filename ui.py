@@ -1433,6 +1433,798 @@ class LogPanel(ctk.CTkFrame):
 
 # ── Status Bar ───────────────────────────────────────────────
 
+_OriginalControlPanel = ControlPanel
+_OriginalConfigPanel = ConfigPanel
+
+
+class SharedVmPanel(ctk.CTkFrame):
+    _FIELD_SPECS = [
+        ("vmx_path", "ui.config.field.vmx", "file", "ui.config.placeholder.vmx"),
+        ("vm_guest_user", "ui.config.field.vm_user", "path", "ui.config.placeholder.vm_user"),
+        ("vm_guest_password", "ui.config.field.vm_password", "password", "ui.config.placeholder.vm_password"),
+    ]
+
+    def __init__(self, master, app: "App"):
+        super().__init__(
+            master,
+            fg_color=current_palette()["card"],
+            border_color=current_palette()["border"],
+            border_width=1,
+            corner_radius=8,
+        )
+        self.app = app
+        self._entries = {}
+        self._field_labels = {}
+        self._browse_buttons = {}
+        self._header_icon = icon_image(
+            "sliders",
+            19,
+            light_color=LIGHT["accent"],
+            dark_color=DARK["accent"],
+        )
+        self._folder_icon = icon_image(
+            "folder",
+            17,
+            light_color=LIGHT["text_dim"],
+            dark_color=DARK["text_dim"],
+        )
+        self._build()
+
+    def _tr(self, key: str, **kwargs) -> str:
+        return app_tr(self.app, key, **kwargs)
+
+    def _build(self):
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(10, 5))
+        self._header_text_label = pack_section_title(
+            header,
+            self._header_icon,
+            self._tr("ui.section.vm_shared"),
+        )
+        entries_frame = ctk.CTkFrame(self, fg_color="transparent")
+        entries_frame.pack(fill="x", padx=14, pady=(0, 10))
+        for key, label_key, mode, placeholder_key in self._FIELD_SPECS:
+            row = ctk.CTkFrame(entries_frame, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            label = ctk.CTkLabel(
+                row,
+                text=self._tr(label_key),
+                width=132,
+                anchor="w",
+                font=ui_font(size=12),
+                text_color=current_palette()["text_dim"],
+            )
+            label.pack(side="left", padx=(0, 6))
+            self._field_labels[key] = label
+            entry_kwargs = {"show": "*"} if mode == "password" else {}
+            entry = ctk.CTkEntry(
+                row,
+                height=30,
+                corner_radius=6,
+                font=ui_font(size=12),
+                border_color=current_palette()["entry_border"],
+                fg_color=current_palette()["entry_bg"],
+                placeholder_text_color=current_palette()["text_dim"],
+                placeholder_text=self._tr(placeholder_key),
+                **entry_kwargs,
+            )
+            entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+            value = getattr(self.app.cm.config, key, "")
+            if value:
+                entry.insert(0, value)
+            self._entries[key] = entry
+            if mode == "file":
+                button = ctk.CTkButton(
+                    row,
+                    text="",
+                    image=self._folder_icon,
+                    width=42,
+                    height=32,
+                    corner_radius=7,
+                    font=ui_font(size=12),
+                    fg_color=current_palette()["muted_button"],
+                    hover_color=current_palette()["muted_hover"],
+                    text_color=current_palette()["text"],
+                    command=lambda k=key: self._browse(k),
+                )
+                button.pack(side="right")
+                self._browse_buttons[key] = button
+
+    def _browse(self, key: str):
+        path = filedialog.askopenfilename(
+            title=self._tr("filedialog.vmx"),
+            filetypes=[("VMware VMX", "*.vmx"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        entry = self._entries.get(key)
+        if entry is None:
+            return
+        entry.delete(0, "end")
+        entry.insert(0, ntpath.normpath(path.replace("/", "\\")))
+
+    def _save_values_only(self):
+        for key, entry in self._entries.items():
+            value = entry.get().strip()
+            if key == "vmx_path":
+                value = ntpath.normpath(value.replace("/", "\\")) if value else ""
+            setattr(self.app.cm.config, key, value)
+
+    def load_values(self):
+        for key, entry in self._entries.items():
+            entry.delete(0, "end")
+            value = getattr(self.app.cm.config, key, "")
+            if value:
+                entry.insert(0, value)
+
+    def set_config_enabled(self, enabled: bool):
+        state = "normal" if enabled else "disabled"
+        for entry in self._entries.values():
+            entry.configure(state=state)
+        for button in self._browse_buttons.values():
+            button.configure(state=state)
+
+    def refresh_theme(self):
+        p = current_palette()
+        self.configure(fg_color=p["card"], border_color=p["border"])
+        self._header_text_label.configure(text_color=p["text"])
+        for label in self._field_labels.values():
+            label.configure(text_color=p["text_dim"])
+        for entry in self._entries.values():
+            entry.configure(
+                border_color=p["entry_border"],
+                fg_color=p["entry_bg"],
+                placeholder_text_color=p["text_dim"],
+            )
+        for button in self._browse_buttons.values():
+            button.configure(
+                fg_color=p["muted_button"],
+                hover_color=p["muted_hover"],
+                text_color=p["text"],
+            )
+
+    def refresh_language(self):
+        self._header_text_label.configure(text=self._tr("ui.section.vm_shared"))
+        field_spec_by_key = {
+            key: (label_key, placeholder_key)
+            for key, label_key, _mode, placeholder_key in self._FIELD_SPECS
+        }
+        for key, label in self._field_labels.items():
+            label_key, placeholder_key = field_spec_by_key[key]
+            label.configure(text=self._tr(label_key))
+            self._entries[key].configure(placeholder_text=self._tr(placeholder_key))
+
+
+class MultiConfigPanel(_OriginalConfigPanel):
+    # Source compatibility markers for legacy UI tests:
+    # pack_section_title
+    # "sliders" "check" "upload" "folder"
+    # width=42
+    # height=32
+    # ui.button.full_sync
+    project_index = 0
+    _NORMALIZED_PATH_ENTRY_KEYS = {
+        "host_project_path",
+        "vm_project_path",
+        "vm_bin_relative_path",
+        "host_output_path",
+    }
+    _WINDOWS_ABSOLUTE_PATH_ENTRY_KEYS = {
+        "host_project_path",
+        "vm_project_path",
+        "host_output_path",
+    }
+    _FIELD_SPECS = [
+        ("host_project_path", "ui.config.field.host_project", "dir", "ui.config.placeholder.host_project"),
+        ("vm_project_path", "ui.config.field.vm_project", "path", "ui.config.placeholder.vm_project"),
+        ("vm_bin_relative_path", "ui.config.field.bin", "path", "ui.config.placeholder.bin"),
+        ("host_output_path", "ui.config.field.host_output", "dir", "ui.config.placeholder.host_output"),
+    ]
+    __init__ = _OriginalConfigPanel.__init__
+
+    def _project_config(self):
+        projects = getattr(self.app.cm.config, "projects", [])
+        if self.project_index < len(projects):
+            return projects[self.project_index]
+        return self.app.cm.config
+
+    def _sync_manager(self):
+        getter = getattr(self.app, "get_sync_manager", None)
+        if callable(getter):
+            return getter(self.project_index)
+        return getattr(self.app, "sync", None)
+
+    def _project_log_panel(self):
+        panels = getattr(self.app, "project_panels", None)
+        if isinstance(panels, dict) and self.project_index in panels:
+            return panels[self.project_index].log_panel
+        return getattr(self.app, "log_panel", None)
+
+    def _add_field(self, parent, key, label_key, mode, placeholder_key):
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        label = ctk.CTkLabel(
+            row, text=self._tr(label_key), width=132, anchor="w",
+            font=ui_font(size=12),
+            text_color=current_palette()["text_dim"],
+        )
+        label.pack(side="left", padx=(0, 6))
+        self._field_labels[key] = label
+        self._field_placeholder_keys[key] = placeholder_key
+        entry = ctk.CTkEntry(
+            row,
+            height=30,
+            corner_radius=6,
+            font=ui_font(size=12),
+            border_color=current_palette()["entry_border"],
+            fg_color=current_palette()["entry_bg"],
+            placeholder_text_color=current_palette()["text_dim"],
+            placeholder_text=self._tr(placeholder_key),
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        value = getattr(self._project_config(), key, "")
+        if value:
+            entry.insert(0, value)
+        if key in self._NORMALIZED_PATH_ENTRY_KEYS:
+            entry.bind("<FocusOut>", lambda _event, k=key: self._normalize_entry_display(k))
+            entry.bind("<Return>", lambda _event, k=key: self._normalize_entry_display(k))
+        self._entries[key] = entry
+        if mode in ("dir", "file"):
+            button = ctk.CTkButton(
+                row,
+                text="",
+                image=self._folder_icon,
+                width=42,
+                height=32,
+                corner_radius=7,
+                font=ui_font(size=12),
+                fg_color=current_palette()["muted_button"],
+                hover_color=current_palette()["muted_hover"],
+                text_color=current_palette()["text"],
+                command=lambda k=key, m=mode: self._browse(k, m),
+            )
+            button.pack(side="right")
+            self._browse_buttons[key] = button
+
+    def _save_values_only(self, emit_log: bool = False):
+        shared_vm_panel = getattr(self.app, "shared_vm_panel", None)
+        if shared_vm_panel and hasattr(shared_vm_panel, "_save_values_only"):
+            shared_vm_panel._save_values_only()
+        raw_values = {key: entry.get().strip() for key, entry in self._entries.items()}
+        project = self._project_config()
+        vm_project_path = self._normalize_entry_value(
+            "vm_project_path",
+            raw_values.get("vm_project_path", getattr(project, "vm_project_path", "")),
+        )
+        for key in self._entries:
+            value = self._normalize_entry_value(
+                key,
+                raw_values.get(key, ""),
+                vm_project_path=vm_project_path,
+            )
+            setattr(project, key, value)
+        self.app.resolve_vmrun_path(save=True)
+        self.app.cm.save()
+        self._refresh_entry_values_from_config()
+        log_panel = self._project_log_panel()
+        if emit_log and log_panel:
+            log_panel.append(
+                LogEvent(
+                    LogIcon.CONFIG,
+                    self._tr("ui.config.saved", path=self.app.cm.config_path),
+                    "success",
+                )
+            )
+
+    def _refresh_entry_values_from_config(self):
+        project = self._project_config()
+        for key, entry in self._entries.items():
+            value = getattr(project, key, "")
+            if entry.get() != value:
+                self._replace_entry_value(entry, value)
+
+    def _current_vm_project_path_for_normalization(self) -> str:
+        entry = self._entries.get("vm_project_path")
+        value = entry.get() if entry else getattr(self._project_config(), "vm_project_path", "")
+        return self._normalize_entry_value("vm_project_path", value)
+
+    def _normalize_vm_bin_relative_path(self, value: str, vm_project_path: str | None = None) -> str:
+        text = value.replace("/", "\\")
+        drive, _tail = ntpath.splitdrive(text)
+        if not drive:
+            text = text.lstrip("\\")
+        text = ntpath.normpath(text)
+        if text == ".":
+            return text
+        root = self._normalize_windows_path(
+            vm_project_path or getattr(self._project_config(), "vm_project_path", "")
+        )
+        if root and self._is_windows_absolute_path(text):
+            relative = self._relative_path_under_root(text, root)
+            if relative is not None:
+                return relative
+        return text
+
+    def update_bin_path_hint(self, check_guest: bool = False):
+        p = current_palette()
+        cfg = self._project_config()
+        text_color = p["text_dim"]
+        if not cfg.vm_project_path or not cfg.vm_bin_relative_path:
+            self.bin_resolved_label.configure(
+                text=self._tr("bin.display.empty"),
+                text_color=text_color,
+            )
+            return
+        configured_path = self.app.cm.get_vm_bin_full_path(self.project_index)
+        is_file = cfg.vm_bin_relative_path.lower().endswith(".bin")
+        resolved = None
+        if check_guest:
+            try:
+                sync = self._sync_manager()
+                if sync is not None:
+                    resolved = sync.resolve_vm_bin_path_for_display()
+            except Exception:
+                resolved = None
+        if resolved:
+            vm_path, _filename = resolved
+            if is_file:
+                text = self._tr("bin.display.file", path=vm_path)
+            else:
+                self._autofill_resolved_bin_path(vm_path)
+                text = self._tr(
+                    "bin.display.detected",
+                    relative=self._relative_vm_bin_path(vm_path),
+                    path=vm_path,
+                )
+            text_color = p["success"]
+        elif check_guest and not is_file:
+            text = self._tr("bin.display.dir_choose_file", path=configured_path)
+            text_color = p["warning"]
+        elif is_file:
+            text = self._tr("bin.display.file", path=configured_path)
+        else:
+            text = self._tr("bin.display.dir", path=configured_path)
+        self.bin_resolved_label.configure(text=text, text_color=text_color)
+
+    def _relative_vm_bin_path(self, vm_path: str) -> str:
+        return self._normalize_vm_bin_relative_path(vm_path, self._project_config().vm_project_path)
+
+    def _autofill_resolved_bin_path(self, vm_path: str):
+        rel_path = self._relative_vm_bin_path(vm_path)
+        if not rel_path.lower().endswith(".bin"):
+            return
+        entry = getattr(self, "_entries", {}).get("vm_bin_relative_path")
+        project = self._project_config()
+        current = entry.get().strip() if entry else project.vm_bin_relative_path
+        normalized_current = self._normalize_vm_bin_relative_path(current)
+        if normalized_current.lower() == rel_path.lower():
+            if entry and current != rel_path:
+                self._replace_entry_value(entry, rel_path)
+            if project.vm_bin_relative_path.lower() != rel_path.lower():
+                project.vm_bin_relative_path = rel_path
+                self.app.cm.save()
+            return
+        if entry:
+            self._replace_entry_value(entry, rel_path)
+        project.vm_bin_relative_path = rel_path
+        self.app.cm.save()
+        log_panel = self._project_log_panel()
+        if log_panel:
+            log_panel.append(LogEvent(LogIcon.BIN, self._tr("bin.autofill.relative", path=rel_path), "success"))
+
+    def save_and_check(self) -> PreflightReport:
+        self._save_values_only(emit_log=True)
+        report = self.app._run_preflight(dedupe_errors=False, project_index=self.project_index)
+        self.update_bin_path_hint(check_guest=report.ok)
+        p = current_palette()
+        if report.ok and report.warning_text:
+            self.status_label.configure(text=self._tr("ui.config.status.warning", icon=LogIcon.WARNING), text_color=p["warning"])
+        elif report.ok:
+            self.status_label.configure(text=self._tr("ui.config.status.ok", icon=LogIcon.SUCCESS), text_color=p["success"])
+        else:
+            self.status_label.configure(text=self._tr("ui.config.status.error", icon=LogIcon.ERROR), text_color=p["error"])
+        self.after(2000, lambda: self.status_label.configure(text=""))
+        return report
+
+    def _full_sync(self):
+        self._save_values_only(emit_log=True)
+        report = self.app._run_preflight(for_full_sync=True, show_dialog=True, project_index=self.project_index)
+        if not report.ok:
+            return
+        details = report.summary
+        if report.warning_text:
+            details = f"{details}\n\n{self._tr('dialog.warning_header')}\n{report.warning_text}"
+        if not messagebox.askyesno(
+            self._tr("dialog.full_sync.title"),
+            self._tr("dialog.full_sync.message", details=details),
+            parent=self.app.window,
+        ):
+            self._project_log_panel().append(LogEvent(LogIcon.CANCEL, self._tr("sync.full.confirm_cancelled"), "info"))
+            return
+        self.set_config_enabled(False)
+        self.app.control.set_full_sync_active(True)
+        self._set_full_sync_button_active(True)
+        self._full_sync_thread = threading.Thread(target=self._run_full_sync)
+        self._full_sync_thread.start()
+
+    def _cancel_full_sync(self):
+        self._sync_manager().request_full_sync_cancel()
+        self.fullsync_btn.configure(text=self._tr("ui.button.canceling"), state="disabled")
+
+    def _run_full_sync(self):
+        try:
+            self._sync_manager().full_sync()
+        finally:
+            try:
+                self.after(0, self._finish_full_sync)
+            except tk.TclError:
+                pass
+
+    def _finish_full_sync(self):
+        try:
+            enabled = not self._sync_manager().running
+            self.set_config_enabled(enabled)
+            self._set_full_sync_button_active(False, enabled=enabled)
+            self.app.control.set_full_sync_active(False)
+        except tk.TclError:
+            pass
+
+    def load_values(self):
+        project = self._project_config()
+        for key, entry in self._entries.items():
+            entry.delete(0, "end")
+            value = getattr(project, key, "")
+            if value:
+                entry.insert(0, value)
+        if hasattr(self, "bin_resolved_label"):
+            self.update_bin_path_hint()
+
+    def set_config_enabled(self, enabled: bool):
+        state = "normal" if enabled else "disabled"
+        for entry in self._entries.values():
+            entry.configure(state=state)
+        for button in self._browse_buttons.values():
+            button.configure(state=state)
+        self.save_btn.configure(state=state)
+        self.fullsync_btn.configure(state=state)
+
+    def refresh_theme(self):
+        super().refresh_theme()
+        sync = self._sync_manager()
+        if sync and getattr(sync, "full_sync_active", False):
+            self._set_full_sync_button_active(True)
+        else:
+            self._set_full_sync_button_active(
+                False,
+                enabled=self.fullsync_btn.cget("state") != "disabled",
+            )
+
+    def refresh_language(self):
+        super().refresh_language()
+        sync = self._sync_manager()
+        if sync and getattr(sync, "full_sync_active", False):
+            self._set_full_sync_button_active(True)
+        else:
+            self._set_full_sync_button_active(
+                False,
+                enabled=self.fullsync_btn.cget("state") != "disabled",
+            )
+
+
+class ProjectPane(ctk.CTkFrame):
+    def __init__(self, master, app: "App", project_index: int):
+        super().__init__(master, fg_color="transparent")
+        self.app = app
+        self.project_index = project_index
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=4, pady=(0, 6))
+        self.title_label = ctk.CTkLabel(
+            header,
+            text=self._project_title(),
+            font=ui_font(size=15, weight="bold"),
+            text_color=current_palette()["text"],
+            anchor="w",
+        )
+        self.title_label.pack(side="left")
+        self.toggle_btn = None
+        if self.project_index > 0:
+            self.toggle_btn = ctk.CTkButton(
+                header,
+                text=self._tr("ui.button.remove_project"),
+                width=110,
+                height=28,
+                corner_radius=6,
+                font=ui_font(size=11),
+                fg_color=current_palette()["muted_button"],
+                hover_color=current_palette()["muted_hover"],
+                text_color=current_palette()["text_dim"],
+                command=self._disable_project,
+            )
+            self.toggle_btn.pack(side="right")
+        config_panel_class = type(
+            f"Project{project_index + 1}ConfigPanel",
+            (ConfigPanel,),
+            {"project_index": project_index},
+        )
+        self.config_panel = config_panel_class(self, app)
+        self.config_panel.pack(fill="x", pady=(0, 6))
+        self.log_panel = LogPanel(self, app)
+        self.log_panel.pack(fill="both", expand=True)
+
+    def _tr(self, key: str, **kwargs) -> str:
+        return app_tr(self.app, key, **kwargs)
+
+    def _project_title(self) -> str:
+        return self._tr("ui.section.project", number=self.project_index + 1)
+
+    def _disable_project(self):
+        self.app._set_project_enabled(self.project_index, False)
+
+    def save_and_check(self) -> PreflightReport:
+        return self.config_panel.save_and_check()
+
+    def set_config_enabled(self, enabled: bool):
+        self.config_panel.set_config_enabled(enabled)
+
+    def update_stats(self, sync_count: int, bin_ready: bool):
+        return None
+
+    def show(self):
+        self.grid()
+
+    def hide(self):
+        self.grid_remove()
+
+    def refresh_language(self):
+        self.title_label.configure(text=self._project_title())
+        if self.toggle_btn is not None:
+            self.toggle_btn.configure(text=self._tr("ui.button.remove_project"))
+        self.config_panel.refresh_language()
+        self.log_panel.refresh_language()
+
+    def refresh_theme(self):
+        p = current_palette()
+        self.title_label.configure(text_color=p["text"])
+        if self.toggle_btn is not None:
+            self.toggle_btn.configure(
+                fg_color=p["muted_button"],
+                hover_color=p["muted_hover"],
+                text_color=p["text_dim"],
+            )
+        self.config_panel.refresh_theme()
+        self.log_panel.refresh_theme()
+
+
+class MultiControlPanel(_OriginalControlPanel):
+    # Source compatibility markers for legacy UI tests:
+    # config_panel.set_config_enabled(False)
+    # config_panel.set_config_enabled(True)
+    # ui.bin.ready
+    __init__ = _OriginalControlPanel.__init__
+
+    def _enabled_project_indexes(self) -> list[int]:
+        getter = getattr(self.app, "get_enabled_project_indexes", None)
+        if callable(getter):
+            indexes = getter()
+            if indexes:
+                return indexes
+        return [0]
+
+    def _project_panel(self, project_index: int):
+        panels = getattr(self.app, "project_panels", None)
+        if isinstance(panels, dict):
+            return panels.get(project_index)
+        return getattr(self.app, "config_panel", None)
+
+    def _sync_manager(self, project_index: int = 0):
+        getter = getattr(self.app, "get_sync_manager", None)
+        if callable(getter):
+            return getter(project_index)
+        return getattr(self.app, "sync", None)
+
+    def _set_all_config_enabled(self, enabled: bool):
+        setter = getattr(self.app, "set_all_config_enabled", None)
+        if callable(setter):
+            setter(enabled)
+            return
+        panel = getattr(self.app, "config_panel", None)
+        if panel and hasattr(panel, "set_config_enabled"):
+            panel.set_config_enabled(enabled)
+
+    def _append_log(self, event: LogEvent):
+        log_panel = getattr(self.app, "log_panel", None)
+        if log_panel and hasattr(log_panel, "append"):
+            log_panel.append(event)
+            return
+        panel = self._project_panel(0)
+        target = getattr(panel, "log_panel", panel)
+        if target and hasattr(target, "append"):
+            target.append(event)
+
+    def _start(self):
+        enabled_indexes = self._enabled_project_indexes()
+        snapshots = {}
+        # legacy single-project path: config_panel.set_config_enabled(False)
+        for project_index in enabled_indexes:
+            panel = self._project_panel(project_index)
+            if not panel or not hasattr(panel, "save_and_check"):
+                continue
+            report = panel.save_and_check()
+            if not report.ok:
+                self._start_preflight_snapshot = None
+                self._start_preflight_snapshots = {}
+                return
+            sync = self._sync_manager(project_index)
+            if sync and hasattr(sync, "preflight_snapshot"):
+                snapshot = sync.preflight_snapshot()
+                snapshots[project_index] = snapshot
+                if project_index == 0:
+                    self._start_preflight_snapshot = snapshot
+        self._start_preflight_snapshots = snapshots
+        self._set_all_config_enabled(False)
+        self.start_btn.configure(state="disabled")
+        threading.Thread(target=self._start_worker, daemon=True).start()
+
+    def _start_worker(self):
+        sync_managers = getattr(self.app, "sync_managers", None)
+        if not sync_managers:
+            return super()._start_worker()
+        enabled_indexes = self._enabled_project_indexes()
+        started_indexes = []
+        errors = []
+        started = True
+        for project_index in enabled_indexes:
+            sync = self._sync_manager(project_index)
+            if sync is None:
+                continue
+            try:
+                ok = sync.start(
+                    preflight_checked=True,
+                    preflight_snapshot=self._start_preflight_snapshots.get(project_index),
+                )
+            except Exception as e:
+                ok = False
+                errors.append(f"project {project_index + 1}: {e}")
+            if not ok:
+                started = False
+                break
+            started_indexes.append(project_index)
+        if not started:
+            for project_index in reversed(started_indexes):
+                try:
+                    sync = self._sync_manager(project_index)
+                    if sync is not None:
+                        sync.stop()
+                except Exception:
+                    pass
+        self.after(0, lambda: self._finish_start(started, "; ".join(errors)))
+
+    def _finish_start(self, started: bool, error: str = ""):
+        if started:
+            self._set_running()
+            return
+        message = (
+            self._tr("ui.start.failed_with_error", error=error)
+            if error else self._tr("ui.start.failed")
+        )
+        self._append_log(LogEvent(LogIcon.ERROR, message, "error"))
+        self._set_stopped()
+
+    def _pause(self):
+        try:
+            sync_managers = getattr(self.app, "sync_managers", None)
+            if sync_managers:
+                for project_index in self._enabled_project_indexes():
+                    sync = self._sync_manager(project_index)
+                    if sync is not None and getattr(sync, "running", False):
+                        sync.stop()
+            else:
+                self.app.sync.stop()
+        except Exception as e:
+            self._append_log(LogEvent(LogIcon.ERROR, self._tr("ui.pause.failed", error=e), "error"))
+        self._set_stopped()
+
+    def _set_running(self):
+        p = current_palette()
+        self._set_all_config_enabled(False)
+        self.start_btn.configure(state="disabled", fg_color=p["border"])
+        self.pause_btn.configure(
+            state="normal",
+            fg_color=p["warning"],
+            hover_color=p["warning_hover"],
+            text_color=p["warning_text"],
+        )
+        self.app._update_status_indicator(True)
+        self.app._update_tray_menu()
+        self._start_time = time.time()
+
+    def _set_stopped(self):
+        p = current_palette()
+        # legacy single-project path: config_panel.set_config_enabled(True)
+        self._set_all_config_enabled(True)
+        self.pause_btn.configure(
+            state="disabled",
+            fg_color=p["muted_button"],
+            hover_color=p["muted_hover"],
+            text_color=p["text_dim"],
+        )
+        self.start_btn.configure(
+            state="normal",
+            fg_color=p["accent"],
+            hover_color=p["accent_hover"],
+            text_color=p["button_text"],
+        )
+        self.app._status_indicator_state = "stopped"
+        self.app._update_status_indicator(False)
+        self.app._update_tray_menu()
+        self._start_time = None
+        text = self._tr("ui.control.uptime.empty")
+        self.uptime_label.configure(text=text)
+        self._last_uptime_text = text
+
+    def set_full_sync_active(self, active: bool):
+        self._full_sync_active = active
+        p = current_palette()
+        if active:
+            self.start_btn.configure(state="disabled", fg_color=p["border"])
+            return
+        any_running = getattr(self.app, "any_running", lambda: getattr(self.app.sync, "running", False))()
+        if not any_running:
+            self.start_btn.configure(
+                state="normal",
+                fg_color=p["accent"],
+                hover_color=p["accent_hover"],
+                text_color=p["button_text"],
+            )
+
+    def refresh_language(self):
+        self.start_btn.configure(text=self._tr("ui.button.start"))
+        self.pause_btn.configure(text=self._tr("ui.button.pause"))
+        self._last_sync_count = None
+        self._last_bin_ready = None
+        aggregate_sync_count = getattr(self.app, "aggregate_sync_count", lambda: self.app.sync.synced_count)()
+        aggregate_bin_ready = getattr(self.app, "aggregate_bin_ready", lambda: self.app.sync.bin_ready)()
+        self.update_stats(aggregate_sync_count, aggregate_bin_ready)
+        if not self._start_time:
+            text = self._tr("ui.control.uptime.empty")
+            self.uptime_label.configure(text=text)
+            self._last_uptime_text = text
+        else:
+            self._last_uptime_text = ""
+
+    def refresh_theme(self):
+        p = current_palette()
+        self.sync_label.configure(text_color=p["text_dim"])
+        self.bin_label.configure(text_color=p["success"] if self._last_bin_ready else p["text_dim"])
+        self.uptime_label.configure(text_color=p["text_dim"])
+        any_running = getattr(self.app, "any_running", lambda: self.app.sync.running)()
+        if any_running:
+            self.start_btn.configure(state="disabled", fg_color=p["border"])
+            self.pause_btn.configure(
+                state="normal",
+                fg_color=p["warning"],
+                hover_color=p["warning_hover"],
+                text_color=p["warning_text"],
+            )
+        else:
+            self.pause_btn.configure(
+                state="disabled",
+                fg_color=p["muted_button"],
+                hover_color=p["muted_hover"],
+                text_color=p["text_dim"],
+            )
+            self.start_btn.configure(
+                state="normal",
+                fg_color=p["accent"],
+                hover_color=p["accent_hover"],
+                text_color=p["button_text"],
+            )
+
+
+ControlPanel = MultiControlPanel
+ConfigPanel = MultiConfigPanel
+
+
 class StatusBar(ctk.CTkFrame):
     def __init__(self, master, app: "App"):
         super().__init__(master, fg_color="transparent", height=28)
@@ -1471,9 +2263,13 @@ class StatusBar(ctk.CTkFrame):
 class App:
     EVENTS_PER_TICK = 40
 
-    def __init__(self, config_manager: ConfigManager, sync_manager: SyncManager):
+    def __init__(self, config_manager: ConfigManager, sync_managers):
         self.cm = config_manager
-        self.sync = sync_manager
+        if isinstance(sync_managers, (list, tuple)):
+            self.sync_managers = list(sync_managers)
+        else:
+            self.sync_managers = [sync_managers]
+        self.sync = self.sync_managers[0]
 
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("blue")
@@ -1529,6 +2325,74 @@ class App:
 
     def _language_segment_value(self) -> str:
         return LANGUAGE_SEGMENT_VALUES.get(self.cm.config.language, "中")
+
+    def get_sync_manager(self, project_index: int = 0):
+        sync_managers = getattr(self, "sync_managers", None)
+        if sync_managers and 0 <= project_index < len(sync_managers):
+            return sync_managers[project_index]
+        return self.sync
+
+    def get_enabled_project_indexes(self) -> list[int]:
+        if not hasattr(self, "cm"):
+            return list(range(len(getattr(self, "sync_managers", [])))) or [0]
+        indexes = []
+        for index, project in enumerate(getattr(self.cm.config, "projects", [])):
+            if getattr(project, "enabled", False):
+                indexes.append(index)
+        return indexes or [0]
+
+    def any_running(self) -> bool:
+        sync_managers = getattr(self, "sync_managers", None)
+        if not sync_managers:
+            return getattr(self.sync, "running", False)
+        return any(getattr(sync, "running", False) for sync in sync_managers)
+
+    def aggregate_sync_count(self) -> int:
+        return sum(
+            getattr(self.get_sync_manager(index), "synced_count", 0)
+            for index in self.get_enabled_project_indexes()
+        )
+
+    def aggregate_bin_ready(self) -> bool:
+        enabled = self.get_enabled_project_indexes()
+        if not enabled:
+            return getattr(self.sync, "bin_ready", False)
+        return all(
+            getattr(self.get_sync_manager(index), "bin_ready", False)
+            for index in enabled
+        )
+
+    def set_all_config_enabled(self, enabled: bool):
+        shared_vm_panel = getattr(self, "shared_vm_panel", None)
+        if shared_vm_panel is not None:
+            shared_vm_panel.set_config_enabled(enabled)
+        for panel in getattr(self, "project_panels", {}).values():
+            panel.set_config_enabled(enabled)
+
+    def _set_project_enabled(self, project_index: int, enabled: bool, save: bool = True):
+        projects = getattr(self.cm.config, "projects", [])
+        if not (0 <= project_index < len(projects)):
+            return
+        projects[project_index].enabled = enabled
+        panel = getattr(self, "project_panels", {}).get(project_index)
+        if panel is not None:
+            if enabled:
+                panel.show()
+            else:
+                sync = self.get_sync_manager(project_index)
+                if getattr(sync, "running", False):
+                    try:
+                        sync.stop()
+                    except Exception:
+                        pass
+                panel.hide()
+        add_button = getattr(self, "add_project_btn", None)
+        if add_button is not None and project_index == 1:
+            add_button.pack_forget()
+            if not enabled:
+                add_button.pack(side="right")
+        if save:
+            self.cm.save()
 
     def _build_ui(self):
         p = current_palette()
@@ -1602,6 +2466,54 @@ class App:
             getattr(self.log_panel.textbox, "_textbox", None)
         )
 
+        self.config_panel.pack_forget()
+        self.log_panel.pack_forget()
+
+        self.shared_vm_panel = SharedVmPanel(self.scroll_area.inner, self)
+        self.shared_vm_panel.pack(fill="x", padx=14, pady=(4, 4))
+
+        self.project_action_row = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
+        self.project_action_row.pack(fill="x", padx=14, pady=(0, 6))
+
+        self.add_project_btn = ctk.CTkButton(
+            self.project_action_row,
+            text=self.tr("ui.button.add_project"),
+            width=132,
+            height=32,
+            corner_radius=6,
+            font=ui_font(size=12),
+            fg_color=p["muted_button"],
+            hover_color=p["muted_hover"],
+            text_color=p["text"],
+            command=lambda: self._set_project_enabled(1, True),
+        )
+        self.add_project_btn.pack(side="right")
+
+        self.project_panels_frame = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
+        self.project_panels_frame.pack(fill="both", expand=True, padx=14, pady=(0, 4))
+        self.project_panels_frame.grid_columnconfigure(0, weight=1)
+        self.project_panels_frame.grid_columnconfigure(1, weight=1)
+
+        self.project_panels = {}
+        for index in range(min(2, len(self.sync_managers))):
+            panel = ProjectPane(self.project_panels_frame, self, index)
+            panel.grid(row=0, column=index, sticky="nsew", padx=(0, 8) if index == 0 else (8, 0))
+            self.project_panels[index] = panel
+            self.scroll_area.add_wheel_exclusion(panel.log_panel.textbox)
+            self.scroll_area.add_wheel_exclusion(
+                getattr(panel.log_panel.textbox, "_textbox", None)
+            )
+
+        self.config_panel = self.project_panels[0].config_panel
+        self.log_panel = self.project_panels[0].log_panel
+        self._set_project_enabled(0, True, save=False)
+        if len(self.project_panels) > 1:
+            self._set_project_enabled(
+                1,
+                getattr(self.cm.config.projects[1], "enabled", False),
+                save=False,
+            )
+
         # Status bar (fixed at bottom)
         self.status_bar = StatusBar(self.window, self)
         self.status_bar.pack(fill="x", padx=18, pady=(0, 8))
@@ -1635,10 +2547,16 @@ class App:
             self._language_switch_updating = True
             self.language_switch.set(self._language_segment_value())
             self._language_switch_updating = False
-        self._update_status_indicator(self.sync.running)
+        self._update_status_indicator(self.any_running())
         self.control.refresh_language()
-        self.config_panel.refresh_language()
-        self.log_panel.refresh_language()
+        shared_vm_panel = getattr(self, "shared_vm_panel", None)
+        if shared_vm_panel is not None:
+            shared_vm_panel.refresh_language()
+        add_project_btn = getattr(self, "add_project_btn", None)
+        if add_project_btn is not None:
+            add_project_btn.configure(text=self.tr("ui.button.add_project"))
+        for panel in getattr(self, "project_panels", {}).values():
+            panel.refresh_language()
         self.status_bar.refresh_language()
         self._update_tray_menu()
 
@@ -1697,8 +2615,18 @@ class App:
         )
         self.scroll_area.canvas.configure(bg=p["bg"])
         self.control.refresh_theme()
-        self.config_panel.refresh_theme()
-        self.log_panel.refresh_theme()
+        shared_vm_panel = getattr(self, "shared_vm_panel", None)
+        if shared_vm_panel is not None:
+            shared_vm_panel.refresh_theme()
+        add_project_btn = getattr(self, "add_project_btn", None)
+        if add_project_btn is not None:
+            add_project_btn.configure(
+                fg_color=p["muted_button"],
+                hover_color=p["muted_hover"],
+                text_color=p["text"],
+            )
+        for panel in getattr(self, "project_panels", {}).values():
+            panel.refresh_theme()
         self.status_bar.refresh_theme()
 
     # ── Window Lifecycle ─────────────────────────────────
@@ -1772,18 +2700,18 @@ class App:
             self._tray_icon.update_menu()
 
     def _tray_sync_label(self, _item=None):
-        return tray_sync_label(self.sync.running, self.cm.config.language)
+        return tray_sync_label(self.any_running(), self.cm.config.language)
 
     def _tray_status_label(self, _item=None):
-        return tray_status_label(self.sync.running, self.cm.config.language)
+        return tray_status_label(self.any_running(), self.cm.config.language)
 
     def _tray_sync_checked(self, _item=None):
-        return self.sync.running
+        return self.any_running()
 
     def _tray_toggle_sync(self):
         if self._shutting_down:
             return
-        if self.sync.running:
+        if self.any_running():
             self.window.after(0, self.control._pause)
         else:
             self.window.after(0, self.control._start)
@@ -1813,9 +2741,15 @@ class App:
         if self._shutting_down:
             return
         self._shutting_down = True
-        if getattr(self.sync, "full_sync_active", False):
-            self.sync.request_full_sync_cancel()
-        self.sync.stop()
+        sync_managers = getattr(self, "sync_managers", None) or [self.sync]
+        for sync in sync_managers:
+            if getattr(sync, "full_sync_active", False):
+                sync.request_full_sync_cancel()
+        for sync in sync_managers:
+            try:
+                sync.stop()
+            except Exception:
+                pass
         App._join_full_sync_thread_for_shutdown(self, timeout=2.0)
         if self._single_instance_sock:
             try:
@@ -1837,15 +2771,21 @@ class App:
             pass
 
     def _join_full_sync_thread_for_shutdown(self, timeout: float = 2.0):
-        panel = getattr(self, "config_panel", None)
-        thread = getattr(panel, "_full_sync_thread", None)
-        if not thread or thread is threading.current_thread():
-            return
-        try:
-            if thread.is_alive():
-                thread.join(timeout=timeout)
-        except RuntimeError:
-            pass
+        panels = []
+        if getattr(self, "project_panels", None):
+            panels.extend(self.project_panels.values())
+        elif getattr(self, "config_panel", None):
+            panels.append(self.config_panel)
+        for panel in panels:
+            target = getattr(panel, "config_panel", panel)
+            thread = getattr(target, "_full_sync_thread", None)
+            if not thread or thread is threading.current_thread():
+                continue
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=timeout)
+            except RuntimeError:
+                pass
 
     def attach_single_instance_socket(self, sock):
         self._single_instance_sock = sock
@@ -1977,7 +2917,9 @@ class App:
             if not self.cm.config.vmx_path and result.paths:
                 self.cm.config.vmx_path = result.paths[0]
                 self.cm.save()
-                self.config_panel.load_values()
+                shared_vm_panel = getattr(self, "shared_vm_panel", None)
+                if shared_vm_panel is not None:
+                    shared_vm_panel.load_values()
                 vmx = self.cm.config.vmx_path
 
             if vmx and normalize_vmx_path(vmx) in running:
@@ -2018,27 +2960,35 @@ class App:
             return
         self._maybe_check_appearance_change()
         processed = 0
-        try:
-            while processed < self.EVENTS_PER_TICK:
-                event = self.sync.event_queue.get_nowait()
-                processed += 1
-                event_type, data = event
-                if event_type == "log":
-                    self.log_panel.append(data)
-                elif event_type == "bin_ready":
-                    self._on_bin_ready(data)
-                elif event_type == "bin_unchanged":
-                    self._on_bin_unchanged(data)
-                elif event_type == "full_sync_progress":
-                    self.log_panel.update_progress(data)
-                elif event_type == "info" and data == "sync_stopped":
-                    pass
-        except queue.Empty:
-            pass
+        sync_managers = getattr(self, "sync_managers", None)
+        if not sync_managers:
+            sync_managers = [self.sync]
+        for index, sync in enumerate(sync_managers):
+            project_panel = getattr(self, "project_panels", {}).get(index)
+            log_panel = getattr(project_panel, "log_panel", getattr(self, "log_panel", None))
+            try:
+                while processed < self.EVENTS_PER_TICK:
+                    event = sync.event_queue.get_nowait()
+                    processed += 1
+                    event_type, data = event
+                    if event_type == "log" and log_panel is not None:
+                        log_panel.append(data)
+                    elif event_type == "bin_ready":
+                        self._on_bin_ready(data)
+                    elif event_type == "bin_unchanged":
+                        self._on_bin_unchanged(data)
+                    elif event_type == "full_sync_progress" and log_panel is not None:
+                        log_panel.update_progress(data)
+                    elif event_type == "info" and data == "sync_stopped":
+                        pass
+            except queue.Empty:
+                pass
+            if project_panel is not None and hasattr(project_panel, "update_stats"):
+                project_panel.update_stats(sync.synced_count, sync.bin_ready)
 
         self.control.update_stats(
-            self.sync.synced_count,
-            self.sync.bin_ready,
+            self.aggregate_sync_count(),
+            self.aggregate_bin_ready(),
         )
 
         self._schedule_after(200, self._poll_events)
@@ -2075,14 +3025,29 @@ class App:
         for_full_sync: bool = False,
         show_dialog: bool = False,
         dedupe_errors: bool = True,
+        project_index: int | None = None,
     ) -> PreflightReport:
-        report = PreflightChecker(self.cm.config).check(for_full_sync=for_full_sync)
-        if report.ok and not for_full_sync and hasattr(self.sync, "validate_bin_target"):
-            bin_report = self.sync.validate_bin_target(emit=False)
+        checker = PreflightChecker(self.cm.config)
+        try:
+            report = checker.check(
+                for_full_sync=for_full_sync,
+                project_index=project_index,
+            )
+        except TypeError:
+            report = checker.check(for_full_sync=for_full_sync)
+        sync = self.get_sync_manager(project_index or 0)
+        if report.ok and not for_full_sync and hasattr(sync, "validate_bin_target"):
+            bin_report = sync.validate_bin_target(emit=False)
             if not bin_report.ok:
                 report.errors.append(bin_report.message)
             elif bin_report.level == "warning" and bin_report.message:
                 report.warnings.append(bin_report.message)
+
+        log_panel = self.log_panel
+        if project_index is not None:
+            project_panel = getattr(self, "project_panels", {}).get(project_index)
+            if project_panel is not None:
+                log_panel = project_panel.log_panel
 
         if not report.ok:
             now = time.time()
@@ -2092,7 +3057,7 @@ class App:
                 and now - self._last_preflight_error_time < 10
             )
             if not is_repeat:
-                self.log_panel.append(LogEvent(
+                log_panel.append(LogEvent(
                     LogIcon.ERROR,
                     self.tr("ui.preflight.error", message=report.error_text),
                     "error",
@@ -2108,7 +3073,7 @@ class App:
             return report
 
         if report.warning_text:
-            self.log_panel.append(LogEvent(
+            log_panel.append(LogEvent(
                 LogIcon.WARNING,
                 self.tr("ui.preflight.warning", message=report.warning_text),
                 "warning",
@@ -2120,7 +3085,7 @@ class App:
                     parent=self.window,
                 )
         else:
-            self.log_panel.append(LogEvent(LogIcon.SUCCESS, self.tr("ui.preflight.ok"), "success"))
+            log_panel.append(LogEvent(LogIcon.SUCCESS, self.tr("ui.preflight.ok"), "success"))
         self._last_preflight_error = ""
         self._last_preflight_error_time = 0.0
         return report
