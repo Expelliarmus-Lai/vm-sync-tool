@@ -1926,6 +1926,18 @@ class ProjectPane(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self.app = app
         self.project_index = project_index
+        self._start_icon = icon_image(
+            "play",
+            14,
+            light_color=LIGHT["button_text"],
+            dark_color=DARK["button_text"],
+        )
+        self._pause_icon = icon_image(
+            "pause",
+            14,
+            light_color=LIGHT["warning_text"],
+            dark_color=DARK["warning_text"],
+        )
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=4, pady=(0, 6))
         self.title_label = ctk.CTkLabel(
@@ -1951,6 +1963,39 @@ class ProjectPane(ctk.CTkFrame):
                 command=self._disable_project,
             )
             self.toggle_btn.pack(side="right")
+        self.pause_btn = ctk.CTkButton(
+            header,
+            text=self._tr("ui.button.pause"),
+            image=self._pause_icon,
+            compound="left",
+            width=76,
+            height=28,
+            border_spacing=4,
+            corner_radius=6,
+            font=ui_font(size=11),
+            fg_color=current_palette()["muted_button"],
+            hover_color=current_palette()["muted_hover"],
+            text_color=current_palette()["text_dim"],
+            state="disabled",
+            command=self._pause_project,
+        )
+        self.pause_btn.pack(side="right", padx=(0, 6))
+        self.start_btn = ctk.CTkButton(
+            header,
+            text=self._tr("ui.button.start"),
+            image=self._start_icon,
+            compound="left",
+            width=76,
+            height=28,
+            border_spacing=4,
+            corner_radius=6,
+            font=ui_font(size=11),
+            fg_color=current_palette()["accent"],
+            hover_color=current_palette()["accent_hover"],
+            text_color=current_palette()["button_text"],
+            command=self._start_project,
+        )
+        self.start_btn.pack(side="right", padx=(0, 6))
         config_panel_class = type(
             f"Project{project_index + 1}ConfigPanel",
             (ConfigPanel,),
@@ -1970,6 +2015,130 @@ class ProjectPane(ctk.CTkFrame):
     def _disable_project(self):
         self.app._set_project_enabled(self.project_index, False)
 
+    def _sync_manager(self):
+        getter = getattr(self.app, "get_sync_manager", None)
+        if callable(getter):
+            return getter(self.project_index)
+        return getattr(self.app, "sync", None)
+
+    def _schedule_ui(self, callback):
+        after = getattr(self, "after", None)
+        if callable(after):
+            after(0, callback)
+        else:
+            callback()
+
+    def _set_project_running_ui(self, running: bool):
+        p = current_palette()
+        self.config_panel.set_config_enabled(not running)
+        self.start_btn.configure(
+            state="disabled" if running else "normal",
+            fg_color=p["border"] if running else p["accent"],
+            hover_color=p["accent_hover"],
+            text_color=p["button_text"],
+        )
+        self.pause_btn.configure(
+            state="normal" if running else "disabled",
+            fg_color=p["warning"] if running else p["muted_button"],
+            hover_color=p["warning_hover"] if running else p["muted_hover"],
+            text_color=p["warning_text"] if running else p["text_dim"],
+        )
+        if self.toggle_btn is not None:
+            self.toggle_btn.configure(state="disabled" if running else "normal")
+
+    def _refresh_app_running_state(self):
+        any_running = False
+        checker = getattr(self.app, "any_running", None)
+        if callable(checker):
+            any_running = checker()
+        else:
+            sync = self._sync_manager()
+            any_running = bool(getattr(sync, "running", False))
+
+        setter = getattr(self.app, "set_all_config_enabled", None)
+        if callable(setter):
+            setter(not any_running)
+
+        control = getattr(self.app, "control", None)
+        if control is not None:
+            if any_running:
+                p = current_palette()
+                control.start_btn.configure(state="disabled", fg_color=p["border"])
+                control.pause_btn.configure(
+                    state="normal",
+                    fg_color=p["warning"],
+                    hover_color=p["warning_hover"],
+                    text_color=p["warning_text"],
+                )
+                if getattr(control, "_start_time", None) is None:
+                    control._start_time = time.time()
+            elif hasattr(control, "_set_stopped"):
+                control._set_stopped()
+
+        update_status = getattr(self.app, "_update_status_indicator", None)
+        if callable(update_status):
+            update_status(any_running)
+        update_tray = getattr(self.app, "_update_tray_menu", None)
+        if callable(update_tray):
+            update_tray()
+
+    def _start_project(self):
+        report = self.save_and_check()
+        if not report.ok:
+            return
+        sync = self._sync_manager()
+        if sync is None:
+            return
+        self._start_preflight_snapshot = (
+            sync.preflight_snapshot()
+            if hasattr(sync, "preflight_snapshot")
+            else None
+        )
+        setter = getattr(self.app, "set_all_config_enabled", None)
+        if callable(setter):
+            setter(False)
+        self.start_btn.configure(state="disabled")
+        threading.Thread(target=self._start_project_worker, daemon=True).start()
+
+    def _start_project_worker(self):
+        started = False
+        error = ""
+        try:
+            sync = self._sync_manager()
+            if sync is not None:
+                started = sync.start(
+                    preflight_checked=True,
+                    preflight_snapshot=getattr(self, "_start_preflight_snapshot", None),
+                )
+        except Exception as e:
+            error = str(e)
+        self._schedule_ui(lambda: self._finish_project_start(started, error))
+
+    def _finish_project_start(self, started: bool, error: str = ""):
+        if started:
+            self._set_project_running_ui(True)
+            self._refresh_app_running_state()
+            return
+        message = (
+            self._tr("ui.start.failed_with_error", error=error)
+            if error else self._tr("ui.start.failed")
+        )
+        self.log_panel.append(LogEvent(LogIcon.ERROR, message, "error"))
+        self._set_project_running_ui(False)
+        self._refresh_app_running_state()
+
+    def _pause_project(self):
+        try:
+            sync = self._sync_manager()
+            if sync is not None and getattr(sync, "running", False):
+                sync.stop()
+        except Exception as e:
+            self.log_panel.append(
+                LogEvent(LogIcon.ERROR, self._tr("ui.pause.failed", error=e), "error")
+            )
+        self._set_project_running_ui(False)
+        self._refresh_app_running_state()
+
     def save_and_check(self) -> PreflightReport:
         return self.config_panel.save_and_check()
 
@@ -1987,6 +2156,8 @@ class ProjectPane(ctk.CTkFrame):
 
     def refresh_language(self):
         self.title_label.configure(text=self._project_title())
+        self.start_btn.configure(text=self._tr("ui.button.start"))
+        self.pause_btn.configure(text=self._tr("ui.button.pause"))
         if self.toggle_btn is not None:
             self.toggle_btn.configure(text=self._tr("ui.button.remove_project"))
         self.config_panel.refresh_language()
@@ -1995,6 +2166,18 @@ class ProjectPane(ctk.CTkFrame):
     def refresh_theme(self):
         p = current_palette()
         self.title_label.configure(text_color=p["text"])
+        sync = self._sync_manager()
+        running = bool(getattr(sync, "running", False))
+        self.start_btn.configure(
+            fg_color=p["border"] if running else p["accent"],
+            hover_color=p["accent_hover"],
+            text_color=p["button_text"],
+        )
+        self.pause_btn.configure(
+            fg_color=p["warning"] if running else p["muted_button"],
+            hover_color=p["warning_hover"] if running else p["muted_hover"],
+            text_color=p["warning_text"] if running else p["text_dim"],
+        )
         if self.toggle_btn is not None:
             self.toggle_btn.configure(
                 fg_color=p["muted_button"],
@@ -2040,6 +2223,17 @@ class MultiControlPanel(_OriginalControlPanel):
         panel = getattr(self.app, "config_panel", None)
         if panel and hasattr(panel, "set_config_enabled"):
             panel.set_config_enabled(enabled)
+
+    def _set_project_running_controls(self, running: bool):
+        panels = getattr(self.app, "project_panels", None)
+        if not isinstance(panels, dict):
+            return
+        indexes = self._enabled_project_indexes() if running else list(panels)
+        for project_index in indexes:
+            panel = panels.get(project_index)
+            updater = getattr(panel, "_set_project_running_ui", None)
+            if callable(updater):
+                updater(running)
 
     def _append_log(self, event: LogEvent):
         log_panel = getattr(self.app, "log_panel", None)
@@ -2137,6 +2331,7 @@ class MultiControlPanel(_OriginalControlPanel):
     def _set_running(self):
         p = current_palette()
         self._set_all_config_enabled(False)
+        self._set_project_running_controls(True)
         self.start_btn.configure(state="disabled", fg_color=p["border"])
         self.pause_btn.configure(
             state="normal",
@@ -2152,6 +2347,7 @@ class MultiControlPanel(_OriginalControlPanel):
         p = current_palette()
         # legacy single-project path: config_panel.set_config_enabled(True)
         self._set_all_config_enabled(True)
+        self._set_project_running_controls(False)
         self.pause_btn.configure(
             state="disabled",
             fg_color=p["muted_button"],
