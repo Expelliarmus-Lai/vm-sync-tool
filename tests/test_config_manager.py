@@ -9,6 +9,16 @@ from config_manager import Config
 
 
 class ConfigManagerPathNormalizationTests(unittest.TestCase):
+    def test_config_example_uses_project_list_schema(self):
+        data = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+
+        self.assertIn("projects", data)
+        self.assertNotIn("host_project_path", data)
+        self.assertNotIn("vm_project_path", data)
+        self.assertEqual(2, len(data["projects"]))
+        self.assertTrue(data["projects"][0]["enabled"])
+        self.assertFalse(data["projects"][1]["enabled"])
+
     def test_default_bin_path_is_not_project_specific(self):
         self.assertNotIn("RL6492_Project.bin", Config().vm_bin_relative_path)
 

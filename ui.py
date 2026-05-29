@@ -3127,8 +3127,18 @@ class App:
     def _update_status_indicator(self, running: bool):
         p = current_palette()
         if running:
+            key = "ui.status.running"
+            enabled_indexes = self.get_enabled_project_indexes()
+            if len(enabled_indexes) > 1:
+                running_count = sum(
+                    1
+                    for index in enabled_indexes
+                    if getattr(self.get_sync_manager(index), "running", False)
+                )
+                if 0 < running_count < len(enabled_indexes):
+                    key = "ui.status.partial_running"
             self.status_dot.configure(text_color=p["success"])
-            self.status_text.configure(text=self.tr("ui.status.running"), text_color=p["success"])
+            self.status_text.configure(text=self.tr(key), text_color=p["success"])
             self._status_indicator_state = "running"
         else:
             self.status_dot.configure(text_color=p["text_dim"])

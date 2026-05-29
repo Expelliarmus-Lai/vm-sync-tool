@@ -96,6 +96,14 @@ class FakeButton:
         self.configures.append(kwargs)
 
 
+class FakeLabel:
+    def __init__(self):
+        self.configures = []
+
+    def configure(self, **kwargs):
+        self.configures.append(kwargs)
+
+
 class ImmediateThread:
     def __init__(self, target, daemon=False):
         self.target = target
@@ -363,6 +371,29 @@ class MultiProjectUiTests(unittest.TestCase):
         App._set_project_enabled(app, 1, False, save=False)
         self.assertEqual(ui.SINGLE_PROJECT_GEOMETRY, app.window.geometry_calls[-1])
         self.assertEqual(ui.SINGLE_PROJECT_MIN_SIZE, app.window.minsize_calls[-1])
+
+    def test_status_indicator_reports_partial_running_for_one_of_two_projects(self):
+        app = object.__new__(App)
+        app.cm = SimpleNamespace(
+            config=SimpleNamespace(
+                language="zh",
+                projects=[
+                    SimpleNamespace(enabled=True),
+                    SimpleNamespace(enabled=True),
+                ],
+            )
+        )
+        app.sync_managers = [
+            FakeSync(0, running=True),
+            FakeSync(1, running=False),
+        ]
+        app.status_dot = FakeLabel()
+        app.status_text = FakeLabel()
+        app._status_indicator_state = "ready"
+
+        App._update_status_indicator(app, True)
+
+        self.assertEqual("部分运行", app.status_text.configures[-1]["text"])
 
 
 if __name__ == "__main__":
