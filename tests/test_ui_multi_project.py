@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import ui
 from preflight import PreflightReport
-from syncer import LogEvent
+from syncer import LogEvent, LogIcon
 from ui import App, ConfigPanel, ControlPanel
 
 
@@ -212,6 +212,27 @@ class MultiProjectUiTests(unittest.TestCase):
             ControlPanel._start(control)
 
         self.assertNotIn("thread_created", calls)
+
+    def test_start_all_logs_to_passed_project_when_another_project_fails_preflight(self):
+        control = object.__new__(ControlPanel)
+        project_1 = FakeProjectPanel(report=PreflightReport())
+        project_2 = FakeProjectPanel(report=PreflightReport(errors=["bad project 2"]))
+        control.app = SimpleNamespace(
+            project_panels={0: project_1, 1: project_2},
+            get_enabled_project_indexes=lambda: [0, 1],
+            cm=SimpleNamespace(config=SimpleNamespace(language="zh")),
+        )
+        control.start_btn = FakeButton()
+
+        ControlPanel._start(control)
+
+        self.assertEqual([], project_2.log_panel.events)
+        self.assertEqual(1, len(project_1.log_panel.events))
+        event = project_1.log_panel.events[0]
+        self.assertEqual(LogIcon.WARNING, event.icon)
+        self.assertIn("项目 2", event.message)
+        self.assertIn("未启动", event.message)
+        self.assertIn("配置", event.message)
 
     def test_top_start_and_pause_all_updates_project_controls(self):
         control = object.__new__(ControlPanel)

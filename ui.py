@@ -2245,9 +2245,29 @@ class MultiControlPanel(_OriginalControlPanel):
         if target and hasattr(target, "append"):
             target.append(event)
 
+    def _append_project_log(self, project_index: int, event: LogEvent):
+        panel = self._project_panel(project_index)
+        target = getattr(panel, "log_panel", panel)
+        if target and hasattr(target, "append"):
+            target.append(event)
+            return
+        self._append_log(event)
+
+    def _log_start_all_blocked(self, passed_indexes: list[int], failed_project_index: int):
+        message = self._tr(
+            "ui.start.blocked_by_project",
+            number=failed_project_index + 1,
+        )
+        for project_index in passed_indexes:
+            self._append_project_log(
+                project_index,
+                LogEvent(LogIcon.WARNING, message, "warning"),
+            )
+
     def _start(self):
         enabled_indexes = self._enabled_project_indexes()
         snapshots = {}
+        passed_indexes = []
         # legacy single-project path: config_panel.set_config_enabled(False)
         for project_index in enabled_indexes:
             panel = self._project_panel(project_index)
@@ -2255,6 +2275,7 @@ class MultiControlPanel(_OriginalControlPanel):
                 continue
             report = panel.save_and_check()
             if not report.ok:
+                self._log_start_all_blocked(passed_indexes, project_index)
                 self._start_preflight_snapshot = None
                 self._start_preflight_snapshots = {}
                 return
@@ -2264,6 +2285,7 @@ class MultiControlPanel(_OriginalControlPanel):
                 snapshots[project_index] = snapshot
                 if project_index == 0:
                     self._start_preflight_snapshot = snapshot
+            passed_indexes.append(project_index)
         self._start_preflight_snapshots = snapshots
         self._set_all_config_enabled(False)
         self.start_btn.configure(state="disabled")
