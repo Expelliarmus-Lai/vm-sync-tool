@@ -39,19 +39,36 @@ On first run, the application creates `config.json` in the same directory as `VM
 
 A compact `中 / EN` language switch is available in the upper-right of the window. First launch prefers the Windows display/UI language; after you switch manually, the choice is saved to `config.json` and reused next time.
 
+## Single-Project and Dual-Project Modes
+
+By default, only Project 1 is shown, and the window keeps the same width as the older single-project UI. To watch a second codebase at the same time, click "Add Project Sync"; the window expands to the right with Project 2's configuration and log pane. Clicking "Disable Project 2" pauses Project 2 and returns the window to the single-project layout.
+
+Project 1 and Project 2 share the same VMX, VM username, and VM password. Each project has its own host project path, VM project path, `.bin` relative path, firmware return directory, Start/Pause controls, Save and Check, Full Sync/Cancel, and log pane. Legacy single-project configs are automatically filled into Project 1, and Project 2 starts disabled.
+
+The top Start/Pause controls apply to all enabled projects. When you click the top Start button, startup is atomic: if any enabled project fails preflight, all projects remain stopped. A project that passed preflight will log that it did not start because another project needs to be fixed first. Clicking Start or Pause inside a project pane affects only that project.
+
 ## Configuration Fields
 
-After opening the application, fill in the configuration panel and click "保存并检测" (Save and Check).
+After opening the application, fill in the shared VM configuration first, then fill in each project's own configuration and click that project's "保存并检测" (Save and Check).
+
+Shared VM configuration:
 
 | Field | Meaning | Example |
 |---|---|---|
 | VMX path | Path to the VM `.vmx` file. It must be the VM that is currently running. | `D:\VMs\Win10\Windows 10.vmx` |
 | VM username | Windows login username inside the VM, used by `vmrun` for file operations. | `h` |
 | VM password | Windows login password inside the VM. Blank passwords are not recommended. | `123456` |
+
+Per-project configuration:
+
+| Field | Meaning | Example |
+|---|---|---|
 | Host project path | The Keil project root that you edit on the host. | `C:\Users\Administrator\Desktop\project` |
 | VM project path | The project root inside the VM. Full sync extracts here; incremental sync also writes here. | `C:\Users\h\Desktop\project` |
 | `.bin` relative path | The `.bin` file or directory relative to the VM project path. | `Output\RL6492\firmware.bin` |
 | Firmware return directory | Host directory where returned `.bin` files are written. | `C:\Users\Administrator\Desktop\bin` |
+
+The host project paths and VM project paths of two enabled projects must not overlap. For example, do not put Project 2 under Project 1's directory, and do not point both projects at the same VM project folder. Preflight blocks overlapping paths to prevent mixed transfers.
 
 ### How to Fill `.bin` Relative Path
 
@@ -78,9 +95,10 @@ If you paste a full absolute path that is under the VM project path, the applica
 3. Fill in the configuration fields.
 4. Click "保存并检测" (Save and Check).
 5. When setting up a project for the first time, click "全量同步" (Full Sync) to copy the whole project into the VM.
-6. Click "启动" (Start). The application first saves the configuration and runs the same checks as "保存并检测" (Save and Check). After the checks pass, it begins watching host file changes and VM `.bin` output.
-7. After the log records the current `.bin` state, build the project manually with Keil inside the VM.
-8. After the `.bin` content changes, the application automatically copies it back to the firmware return directory.
+6. If you need a second codebase, click "Add Project Sync", fill in Project 2's paths, and run Save and Check for Project 2.
+7. Click the top Start button to start all enabled projects, or click Start inside one project pane to start only that project. The application first saves the configuration and runs the same checks as Save and Check. After the checks pass, it begins watching host file changes and VM `.bin` output.
+8. After the corresponding project log records the current `.bin` state, build that project manually with Keil inside the VM.
+9. After the `.bin` content changes, the application automatically copies it back to that project's firmware return directory.
 
 ## Full Sync vs Start Sync
 
@@ -88,7 +106,7 @@ If you paste a full absolute path that is under the VM project path, the applica
 
 Full sync packages every file under the host project directory, uploads the archive to the VM, and extracts it into the VM project path. Use it when configuring a project for the first time, after large project structure changes, or when files are missing in the VM project directory.
 
-During full sync, the configuration panel and Start button are disabled, and the Full Sync button changes to Cancel Full Sync. When cancelled, the application does not force-kill the current VM file operation. It waits for the current step to finish, stops later steps, and cleans the local temporary zip, VM temporary zip, and VM temporary extraction directory. If cleanup fails, the log prints the temporary path that should be removed manually.
+Full sync is independent per project. Project 1's Full Sync uses only Project 1's host and VM project paths; Project 2 behaves the same way. During full sync, that project's configuration panel and the top Start button are disabled, and the Full Sync button changes to Cancel Full Sync. When cancelled, the application does not force-kill the current VM file operation. It waits for the current step to finish, stops later steps, and cleans the local temporary zip, VM temporary zip, and VM temporary extraction directory. If cleanup fails, the log prints the temporary path that should be removed manually.
 
 Overwrite rule: VM files with the same relative paths are overwritten by host files. Extra files that already exist in the VM are not deleted. Full sync extracts into a VM temporary directory first, then copies from that temporary directory into the VM project path. In other words, full sync updates matching files from the host but does not clear the VM directory.
 
@@ -99,13 +117,13 @@ After start sync is enabled, the application does two things:
 - Watches host project file changes and incrementally syncs them into the VM.
 - Polls the VM `.bin` output file and copies it back to the host when the content changes.
 
-When you click Start, the application first saves the current configuration, logs that the paths have been saved to `config.json`, and runs the same checks as "Save and Check". If the checks fail, sync does not start; fix the configuration according to the log first.
+When you click Start inside one project pane, the application first saves the current configuration, logs that the paths have been saved to `config.json` in that project's log, and runs the same checks as Save and Check. If the checks fail, sync does not start; fix the configuration according to the log first. When you click the top Start button, all enabled projects are checked first. If any one fails, all projects remain stopped so you do not accidentally run with a partial or unsafe configuration.
 
 The intended timing is: sync the project files into the VM, click Start, then build in Keil. Do not build first and then start the application expecting the existing `.bin` to be returned; a `.bin` that already exists before Start is recorded as the baseline and is not copied back immediately. If you compile again after Start, the application will copy the `.bin` back once even when the content is unchanged but the timestamp was updated, so repeated builds right after startup still produce a return event.
 
-Incremental sync only handles files that are created or modified on the host, and only when their extensions are included in `watch_extensions`. The app compares the on-disk file content hash and uploads only when the content really changes; editor probes, timestamp-only updates, and unsaved VS Code edits are ignored. Each file is copied to a temporary file in the VM destination directory first, then moved over the final path, reducing the risk of damaging the target file if sync is paused or the app exits. VM files with the same relative paths are overwritten. Deletes, renames, and files outside the extension list are not automatically synced.
+Incremental sync only handles files that are created or modified under that project's host path, and only when their extensions are included in `watch_extensions`. The app compares the on-disk file content hash and uploads only when the content really changes; editor probes, timestamp-only updates, and unsaved VS Code edits are ignored. Each file is copied to a temporary file in that project's VM destination directory first, then moved over the final path, reducing the risk of damaging the target file if sync is paused or the app exits. VM files with the same relative paths are overwritten. Deletes, renames, and files outside the extension list are not automatically synced. The two projects have separate upload queues and hash baselines; an incremental upload timeout pauses only the project that hit the error and does not stop the other project.
 
-`.bin` return only targets one configured `.bin` file. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back when its content changes. After the first baseline record, one timestamp-only update with unchanged content is also copied back once; later timestamp-only updates are skipped and reported through a tray notification, similar to the firmware-ready notification. After sync is stopped, late `.bin` poll results no longer emit logs, notifications, or overwrites.
+`.bin` return targets only the `.bin` file configured for that project. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back when its content changes. After the first baseline record, one timestamp-only update with unchanged content is also copied back once; later timestamp-only updates are skipped and reported through a tray notification, similar to the firmware-ready notification. After one project is stopped, late `.bin` poll results no longer emit that project's logs, notifications, or overwrites, and they do not affect the other project.
 
 ## FAQ
 

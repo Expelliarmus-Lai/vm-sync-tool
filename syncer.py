@@ -192,6 +192,10 @@ class SyncManager:
     def full_sync_active(self) -> bool:
         return self._full_sync_active
 
+    @property
+    def has_error(self) -> bool:
+        return self._incremental_sync_suspended
+
     # ── Lifecycle ──────────────────────────────────────────
 
     def start(
@@ -222,6 +226,7 @@ class SyncManager:
     def stop(self):
         self._stop_requested = True
         self._running = False
+        self._incremental_sync_suspended = False
         self._advance_run_token()
         if self._debouncer:
             self._debouncer.cancel_all()
@@ -316,6 +321,11 @@ class SyncManager:
         if self._stop_requested:
             return False
         return run_token is None or run_token == self._run_token
+
+    def _is_live_run(self, run_token: int | None) -> bool:
+        if run_token is None:
+            return not self._stop_requested
+        return self._running and self._is_current_run_token(run_token)
 
     def _defer_startup_bin_baseline(self):
         cfg = self.config.config
@@ -665,6 +675,9 @@ class SyncManager:
             return
         if guest_state is not None:
             if self._startup_bin_baseline_pending:
+                if not self._is_live_run(run_token):
+                    self._bin_ready = False
+                    return
                 self._record_startup_bin_state(vm_bin, bin_filename, guest_state)
                 self._bin_ready = False
                 return
@@ -679,6 +692,9 @@ class SyncManager:
                 and content_key == self._startup_bin_content_key
             ):
                 if self._startup_bin_same_content_copy_pending:
+                    if not self._is_live_run(run_token):
+                        self._bin_ready = False
+                        return
                     self._emit(
                         "info",
                         LogIcon.BIN,
@@ -688,8 +704,11 @@ class SyncManager:
                     self._startup_bin_content_key = None
                     self._startup_bin_same_content_copy_pending = False
                 else:
+                    if not self._is_live_run(run_token):
+                        self._bin_ready = False
+                        return
                     self._startup_bin_state = state_key
-                    self._log_bin_content_unchanged_once(state_key, bin_filename)
+                    self._log_bin_content_unchanged_once(state_key, bin_filename, run_token=run_token)
                     self._bin_ready = False
                     return
             if (
@@ -707,14 +726,20 @@ class SyncManager:
                 self._bin_ready = True
                 return
             if self._guest_bin_content_is_unchanged(state_key, host_out):
+                if not self._is_live_run(run_token):
+                    self._bin_ready = False
+                    return
                 self._last_bin_state = state_key
-                self._log_bin_content_unchanged_once(state_key, bin_filename)
+                self._log_bin_content_unchanged_once(state_key, bin_filename, run_token=run_token)
                 self._bin_ready = True
                 return
         else:
             if self._startup_bin_baseline_pending:
                 signature = self._read_guest_bin_signature(vm_bin, vmx)
                 if signature is not None:
+                    if not self._is_live_run(run_token):
+                        self._bin_ready = False
+                        return
                     self._record_startup_bin_signature(
                         vm_bin,
                         bin_filename,
@@ -767,15 +792,22 @@ class SyncManager:
                     self._last_bin_state = state_key
                 else:
                     unchanged_log_key = (vm_bin.lower(), "copied", *signature)
-                self._log_bin_content_unchanged_once(unchanged_log_key, bin_filename)
+                self._log_bin_content_unchanged_once(
+                    unchanged_log_key,
+                    bin_filename,
+                    run_token=run_token,
+                )
                 self._bin_ready = True
                 return
 
-            if not self._is_current_run_token(run_token):
+            if not self._is_live_run(run_token):
                 tmp_path.unlink(missing_ok=True)
                 self._bin_ready = False
                 return
             tmp_path.replace(host_out)
+            if not self._is_live_run(run_token):
+                self._bin_ready = False
+                return
             self._last_bin_signature = signature
             if state_key is not None:
                 self._last_bin_state = state_key
@@ -842,8 +874,13 @@ class SyncManager:
             return False
         return True
 
-    def _log_bin_content_unchanged_once(self, log_key: tuple, bin_filename: str):
-        if self._stop_requested:
+    def _log_bin_content_unchanged_once(
+        self,
+        log_key: tuple,
+        bin_filename: str,
+        run_token: int | None = None,
+    ):
+        if not self._is_live_run(run_token):
             return
         if log_key == self._last_bin_unchanged_log_state:
             return

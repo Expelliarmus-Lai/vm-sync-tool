@@ -108,6 +108,10 @@ class PreflightChecker:
         elif not Path(cfg.vmx_path).exists():
             report.errors.append(self.t("preflight.vmx.not_found", path=cfg.vmx_path))
 
+        all_enabled_projects = [
+            (idx, p) for idx, p in enumerate(self.config.projects)
+            if p.enabled
+        ]
         enabled_projects = [
             (idx, p) for idx, p in enumerate(self.config.projects)
             if p.enabled and (project_index is None or idx == project_index)
@@ -117,8 +121,8 @@ class PreflightChecker:
             pr = self._check_project(p, idx, for_full_sync)
             report.project_reports[idx] = pr
 
-        if len(enabled_projects) > 1 and project_index is None:
-            self._check_project_overlaps(enabled_projects, report)
+        if len(all_enabled_projects) > 1:
+            self._check_project_overlaps(all_enabled_projects, report)
 
         return report
 

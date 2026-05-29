@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
-$ReleaseVersion = if ($env:VM_SYNC_VERSION) { $env:VM_SYNC_VERSION } else { "v1.1.0" }
+$ReleaseVersion = if ($env:VM_SYNC_VERSION) { $env:VM_SYNC_VERSION } else { "v1.2.0" }
 $ReleaseZip = Join-Path $Root ("dist\VM-Sync-{0}.zip" -f $ReleaseVersion)
 
 Write-Host "== VM Sync release build =="

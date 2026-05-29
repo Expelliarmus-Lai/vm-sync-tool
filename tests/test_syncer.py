@@ -1283,6 +1283,47 @@ class SyncManagerTests(unittest.TestCase):
             self.assertFalse(manager.bin_ready)
             self.assertTrue(manager.event_queue.empty())
 
+    def test_late_unchanged_bin_state_from_stale_run_does_not_notify(self):
+        manager, cm = self._manager()
+        digest = "a" * 64
+        with tempfile.TemporaryDirectory() as out:
+            host_out = Path(out) / "firmware.bin"
+            host_out.write_bytes(b"firmware")
+            vm_bin = r"C:\project\Output\firmware.bin"
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+            manager._running = True
+            manager._run_token = 1
+            manager._last_bin_state = (vm_bin.lower(), 100, 8, digest)
+
+            def mark_stale(_state_key, _host_out):
+                manager._run_token = 2
+                return True
+
+            with patch.object(
+                manager,
+                "_resolve_vm_bin_cached",
+                return_value=(vm_bin, "firmware.bin"),
+            ), patch.object(
+                manager,
+                "_get_guest_file_state",
+                return_value=(101, 8, digest),
+            ), patch.object(
+                manager,
+                "_guest_bin_content_is_unchanged",
+                side_effect=mark_stale,
+            ):
+                manager._check_bin(run_token=1)
+
+            self.assertEqual(b"firmware", host_out.read_bytes())
+            self.assertFalse(manager.bin_ready)
+            self.assertTrue(manager.event_queue.empty())
+
     def test_full_sync_cancel_after_upload_cleans_guest_temp_paths(self):
         manager, cm = self._manager()
         with tempfile.TemporaryDirectory() as host:

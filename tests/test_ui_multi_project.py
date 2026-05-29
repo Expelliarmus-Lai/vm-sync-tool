@@ -54,14 +54,26 @@ class FakeProjectPanel:
 
 
 class FakeSync:
-    def __init__(self, project_index=0, *, running=False, synced_count=0, bin_ready=False):
+    def __init__(
+        self,
+        project_index=0,
+        *,
+        running=False,
+        synced_count=0,
+        bin_ready=False,
+        has_error=False,
+        full_sync_active=False,
+    ):
         self.project_index = project_index
         self.event_queue = queue.Queue()
         self.running = running
         self.synced_count = synced_count
         self.bin_ready = bin_ready
+        self.has_error = has_error
+        self.full_sync_active = full_sync_active
         self.start_calls = []
         self.stop_calls = 0
+        self.cancel_full_sync_calls = 0
 
     def preflight_snapshot(self):
         return ("snapshot", self.project_index)
@@ -74,6 +86,9 @@ class FakeSync:
     def stop(self):
         self.stop_calls += 1
         self.running = False
+
+    def request_full_sync_cancel(self):
+        self.cancel_full_sync_calls += 1
 
 
 class FakeWindow:
@@ -166,6 +181,33 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertFalse(app.cm.config.projects[1].enabled)
         self.assertEqual(1, app.project_panels[1].hide_calls)
         self.assertFalse(app.project_panels[1].visible)
+
+    def test_disabling_project_cancels_project_full_sync_before_hiding(self):
+        app = object.__new__(App)
+        app.cm = SimpleNamespace(
+            config=SimpleNamespace(
+                projects=[
+                    SimpleNamespace(enabled=True),
+                    SimpleNamespace(enabled=True),
+                ]
+            ),
+            save=lambda: None,
+        )
+        app.project_panels = {
+            0: FakeProjectPanel(),
+            1: FakeProjectPanel(),
+        }
+        app.sync_managers = [FakeSync(0), FakeSync(1, full_sync_active=True)]
+        app.add_project_btn = SimpleNamespace(
+            pack_forget=lambda: None,
+            pack=lambda **_kwargs: None,
+        )
+        app.window = FakeWindow()
+
+        App._set_project_enabled(app, 1, False, save=False)
+
+        self.assertEqual(1, app.sync_managers[1].cancel_full_sync_calls)
+        self.assertEqual(1, app.project_panels[1].hide_calls)
 
     def test_poll_events_routes_each_manager_to_its_project_log_panel(self):
         app = object.__new__(App)
@@ -394,6 +436,29 @@ class MultiProjectUiTests(unittest.TestCase):
         App._update_status_indicator(app, True)
 
         self.assertEqual("部分运行", app.status_text.configures[-1]["text"])
+
+    def test_status_indicator_reports_partial_error_for_suspended_project(self):
+        app = object.__new__(App)
+        app.cm = SimpleNamespace(
+            config=SimpleNamespace(
+                language="zh",
+                projects=[
+                    SimpleNamespace(enabled=True),
+                    SimpleNamespace(enabled=True),
+                ],
+            )
+        )
+        app.sync_managers = [
+            FakeSync(0, running=True),
+            FakeSync(1, running=True, has_error=True),
+        ]
+        app.status_dot = FakeLabel()
+        app.status_text = FakeLabel()
+        app._status_indicator_state = "ready"
+
+        App._update_status_indicator(app, True)
+
+        self.assertEqual("部分异常", app.status_text.configures[-1]["text"])
 
 
 if __name__ == "__main__":

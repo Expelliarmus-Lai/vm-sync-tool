@@ -44,7 +44,38 @@ class TrayMenuTests(unittest.TestCase):
         self.assertEqual("状态：运行中", tray_status_label(True))
         self.assertEqual("状态：已停止", tray_status_label(False))
         self.assertEqual("Status: Running", tray_status_label(True, "en"))
+        self.assertEqual("Status: Partially running", tray_status_label(True, "en", "partial_running"))
+        self.assertEqual("Status: Partially degraded", tray_status_label(True, "en", "partial_error"))
+        self.assertEqual("Status: Sync issue", tray_status_label(True, "en", "error"))
         self.assertEqual("Status: Stopped", tray_status_label(False, "en"))
+
+    def test_tray_menu_static_labels_are_dynamic_for_language_switching(self):
+        source = inspect.getsource(App._build_tray_menu)
+
+        self.assertIn("_tray_show_label", source)
+        self.assertIn("_tray_quit_label", source)
+        self.assertNotIn('t("tray.show")', source)
+        self.assertNotIn('t("tray.quit")', source)
+
+    def test_tray_status_label_uses_runtime_partial_state(self):
+        app = SimpleNamespace(
+            any_running=lambda: True,
+            cm=SimpleNamespace(config=SimpleNamespace(language="en")),
+            _runtime_status_state=lambda running: "partial_error",
+        )
+
+        self.assertEqual("Status: Partially degraded", App._tray_status_label(app))
+
+    def test_tray_show_and_quit_labels_follow_current_language(self):
+        app = SimpleNamespace(
+            tr=lambda key: {
+                "tray.show": "Show Window",
+                "tray.quit": "Exit",
+            }[key],
+        )
+
+        self.assertEqual("Show Window", App._tray_show_label(app))
+        self.assertEqual("Exit", App._tray_quit_label(app))
 
 
     def test_tray_quit_runs_complete_shutdown(self):

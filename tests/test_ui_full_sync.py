@@ -249,9 +249,11 @@ class FullSyncUiTests(unittest.TestCase):
 
         self.assertIn("set_config_enabled(False)", full_sync_source)
         self.assertIn("control.set_full_sync_active(True)", full_sync_source)
+        self.assertIn("_set_project_toggle_enabled(False)", full_sync_source)
         self.assertIn("_finish_full_sync", worker_source)
         self.assertIn("control.set_full_sync_active(False)", finish_source)
         self.assertIn("set_config_enabled(enabled)", finish_source)
+        self.assertIn("_set_project_toggle_enabled(enabled)", finish_source)
 
     def test_finish_full_sync_ignores_tcl_error_after_shutdown(self):
         panel = object.__new__(ConfigPanel)

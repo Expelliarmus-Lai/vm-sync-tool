@@ -83,6 +83,37 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
         self.assertEqual(r"D:\VMs\dev\dev.vmx", data["vmx_path"])
         self.assertEqual(r"Output\RL6492", data["projects"][0]["vm_bin_relative_path"])
 
+    def test_load_prefers_projects_when_legacy_project_fields_also_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "host_project_path": "C:/legacy/project",
+                        "vm_project_path": "C:/legacy/vm",
+                        "vm_bin_relative_path": "Output/legacy.bin",
+                        "host_output_path": "C:/legacy/out",
+                        "projects": [
+                            {
+                                "enabled": True,
+                                "host_project_path": "C:/new/project",
+                                "vm_project_path": "C:/new/vm",
+                                "vm_bin_relative_path": "Output/new.bin",
+                                "host_output_path": "C:/new/out",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            cm = ConfigManager(str(config_path))
+
+        self.assertEqual(r"C:\new\project", cm.config.projects[0].host_project_path)
+        self.assertEqual(r"C:\new\vm", cm.config.projects[0].vm_project_path)
+        self.assertEqual(r"Output\new.bin", cm.config.projects[0].vm_bin_relative_path)
+        self.assertEqual(r"C:\new\out", cm.config.projects[0].host_output_path)
+
     def test_load_upgrades_legacy_bin_poll_interval(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"

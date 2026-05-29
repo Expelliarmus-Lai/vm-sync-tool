@@ -17,17 +17,22 @@ Typical workflow:
 
 - Automatically detects and saves the `vmrun.exe` path.
 - Verifies that the configured `.vmx` is the VM currently running in `vmrun list`.
+- Supports watching two independent Keil projects under the same VM and the same VM account. Project 1 and Project 2 each keep their own host project path, VM project path, `.bin` relative path, and firmware return directory.
+- Legacy single-project `config.json` files are migrated into Project 1 automatically. New configs use a `projects` list so future multi-project expansion is easier to maintain.
+- Project 1 and Project 2 can each start, pause, save/check, full-sync, cancel full-sync, and show logs independently; the top controls can still start or pause all enabled projects.
 - Performs full project sync by uploading a zip archive and extracting it inside the VM.
 - Watches host project file changes and incrementally syncs matching file extensions into the VM.
 - Incremental sync writes to a temporary file in the VM destination directory first, then moves it over the final file to reduce half-written target files if interrupted.
 - Watches the configured VM `.bin` output and pulls it back to the host only when the file content changes.
 - Records the existing VM `.bin` as a startup baseline, preventing old firmware from immediately overwriting the host output.
+- The two projects have separate watchers, upload queues, hash baselines, `.bin` baselines, return directories, and log panes. `vmrun` calls are still serialized to reduce VMware VIX instability.
 - Clicking Start first saves the configuration and runs the same checks as "Save and Check"; sync is not started if the checks fail.
+- The top Start All action is atomic: if any enabled project fails preflight, neither project starts, and the project that passed logs that it is waiting for the failed project to be fixed.
 - Configuration saves are logged with the `config.json` path.
 - `.bin` timestamp-only updates with unchanged content are skipped and reported through a tray notification.
 - During full sync, configuration fields and Start are disabled, the full-sync button changes to Cancel Full Sync, and cancellation waits for the current VM operation before cleanup.
 - Supports Chinese/English UI switching. First launch prefers the Windows display/UI language, and manual changes are remembered.
-- Supports system tray operation, so the sync service can continue after the window is hidden.
+- Supports system tray operation, so the sync service can continue after the window is hidden. The tray menu follows the selected language and reports running, partially running, or partially degraded state.
 - Stops sync threads and cleans temporary VM state files when the application exits.
 
 ## Requirements
@@ -43,7 +48,7 @@ This tool does not install VMware Workstation, VMware Tools, or Keil, and it doe
 
 ## Usage Entry Points
 
-Regular users should download the release package: [VM-Sync-v1.1.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.1.0/VM-Sync-v1.1.0.zip).
+Regular users should download the release package: [VM-Sync-v1.2.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.2.0/VM-Sync-v1.2.0.zip).
 
 You can also open [GitHub Releases](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/latest) for the latest version. The release package should look like this:
 
@@ -66,6 +71,7 @@ Developers should use the source repository and refer to the sections below: [De
 - **Full sync**: Uploads every file under the host project root, extracts the archive into a VM temporary directory, then copies the extracted files into the VM project path. VM files with the same relative paths are overwritten; extra files that already exist in the VM are not deleted. Full sync can be cancelled; cancellation runs after the current VM operation and attempts to clean the temporary zip and extraction directory.
 - **Incremental sync**: Clicking Start first saves the configuration and runs the same preflight as "Save and Check"; the service starts only after those checks pass. After the sync service starts, newly created or modified host files are watched and only extensions configured in `watch_extensions` are processed. A file is uploaded only when its on-disk content hash changes; editor probes, timestamp-only updates, and unsaved VS Code edits are ignored. Each file is copied to a temporary file in the VM destination directory before it is moved over the final path; deletes, renames, and files outside the extension list are not automatically synced.
 - **`.bin` return**: Pulls back only the configured VM `.bin` target. The `.bin` path is ultimately saved relative to the VM project path; if you paste an absolute path under the VM project path, the UI converts it to a relative path and displays Windows backslashes consistently. When the sync service starts, the current VM `.bin` is recorded as a baseline and is not copied back immediately. Later content changes overwrite the same-named file in the host firmware output directory. Files whose timestamp changes but content stays the same are skipped and reported through a tray notification. After sync is stopped, late `.bin` poll results no longer emit logs, notifications, or overwrites.
+- **Dual-project watching**: Enable Project 2 with "Add Project Sync". Both projects share the VMX, VM username, and VM password, but project paths, full sync, incremental uploads, `.bin` return, pause/cancel state, and logs are isolated. If enabled projects have overlapping host or VM paths, preflight blocks startup to prevent mixed transfers.
 - **Start timing**: Sync the project into the VM first, click Start, then build in Keil. A `.bin` that already exists before Start is treated as the baseline; the first post-baseline timestamp update is copied back once even if the content is unchanged.
 
 For detailed user instructions, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
@@ -156,10 +162,10 @@ The build output is generated at:
 
 ```text
 dist\VM Sync\
-dist\VM-Sync-v1.1.0.zip
+dist\VM-Sync-v1.2.0.zip
 ```
 
-Distribute `VM-Sync-v1.1.0.zip`, or distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, because the executable depends on the adjacent `_internal` directory.
+Distribute `VM-Sync-v1.2.0.zip`, or distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, because the executable depends on the adjacent `_internal` directory.
 
 ## Repository Maintenance
 

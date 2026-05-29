@@ -331,5 +331,34 @@ class PreflightCheckerTests(unittest.TestCase):
             self.assertFalse(report.ok)
             self.assertTrue(any("overlapping vm_project_paths" in err for err in report.errors))
 
+    def test_rejects_project_overlap_during_single_project_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "out").mkdir(parents=True, exist_ok=True)
+            host1 = root / "p1"
+            host1.mkdir(parents=True, exist_ok=True)
+            (host1 / "main.c").touch()
+            host2 = host1 / "nested"
+            host2.mkdir(parents=True, exist_ok=True)
+            (host2 / "other.c").touch()
+
+            cfg = self._config(host1, tmp)
+            cfg.projects[0].vm_project_path = r"C:\project1"
+            cfg.projects.append(ProjectConfig(
+                enabled=True,
+                host_project_path=str(host2),
+                vm_project_path=r"C:\project2",
+                vm_bin_relative_path=r"Output\test.bin",
+                host_output_path=str(root / "out"),
+            ))
+
+            report = PreflightChecker(
+                cfg,
+                lambda _, **kw: RunningVmsResult(True, [cfg.vmx_path], ""),
+            ).check(project_index=1)
+
+            self.assertFalse(report.ok)
+            self.assertTrue(any("overlapping host_project_paths" in err for err in report.errors))
+
 if __name__ == "__main__":
     unittest.main()

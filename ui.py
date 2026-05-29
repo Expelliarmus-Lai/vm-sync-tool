@@ -435,9 +435,20 @@ def tray_sync_label(running: bool, language: str = "zh") -> str:
     return t("tray.sync.pause") if running else t("tray.sync.start")
 
 
-def tray_status_label(running: bool, language: str = "zh") -> str:
+def tray_status_label(
+    running: bool,
+    language: str = "zh",
+    status: str | None = None,
+) -> str:
     t = Translator(language).tr
-    return t("tray.status.running") if running else t("tray.status.stopped")
+    if not running:
+        return t("tray.status.stopped")
+    key = {
+        "partial_running": "tray.status.partial_running",
+        "partial_error": "tray.status.partial_error",
+        "error": "tray.status.error",
+    }.get(status, "tray.status.running")
+    return t(key)
 
 
 # ── Control Panel ────────────────────────────────────────────
@@ -1650,6 +1661,15 @@ class MultiConfigPanel(_OriginalConfigPanel):
             return panels[self.project_index].log_panel
         return getattr(self.app, "log_panel", None)
 
+    def _set_project_toggle_enabled(self, enabled: bool):
+        panels = getattr(self.app, "project_panels", None)
+        if not isinstance(panels, dict):
+            return
+        panel = panels.get(self.project_index)
+        button = getattr(panel, "toggle_btn", None)
+        if button is not None:
+            button.configure(state="normal" if enabled else "disabled")
+
     def _add_field(self, parent, key, label_key, mode, placeholder_key):
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", pady=2)
@@ -1852,6 +1872,7 @@ class MultiConfigPanel(_OriginalConfigPanel):
             self._project_log_panel().append(LogEvent(LogIcon.CANCEL, self._tr("sync.full.confirm_cancelled"), "info"))
             return
         self.set_config_enabled(False)
+        self._set_project_toggle_enabled(False)
         self.app.control.set_full_sync_active(True)
         self._set_full_sync_button_active(True)
         self._full_sync_thread = threading.Thread(target=self._run_full_sync)
@@ -1874,6 +1895,7 @@ class MultiConfigPanel(_OriginalConfigPanel):
         try:
             enabled = not self._sync_manager().running
             self.set_config_enabled(enabled)
+            self._set_project_toggle_enabled(enabled)
             self._set_full_sync_button_active(False, enabled=enabled)
             self.app.control.set_full_sync_active(False)
         except tk.TclError:
@@ -2662,6 +2684,11 @@ class App:
                 panel.show()
             else:
                 sync = self.get_sync_manager(project_index)
+                if getattr(sync, "full_sync_active", False):
+                    try:
+                        sync.request_full_sync_cancel()
+                    except Exception:
+                        pass
                 if getattr(sync, "running", False):
                     try:
                         sync.stop()
@@ -2988,7 +3015,6 @@ class App:
         self._tray_thread.start()
 
     def _build_tray_menu(self):
-        t = self.tr
         return pystray.Menu(
             pystray.MenuItem(
                 self._tray_status_label,
@@ -2996,7 +3022,7 @@ class App:
                 enabled=False,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(t("tray.show"), self._tray_show, default=True),
+            pystray.MenuItem(self._tray_show_label, self._tray_show, default=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 self._tray_sync_label,
@@ -3004,7 +3030,7 @@ class App:
                 checked=self._tray_sync_checked,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(t("tray.quit"), self._tray_quit),
+            pystray.MenuItem(self._tray_quit_label, self._tray_quit),
         )
 
     def _update_tray_menu(self):
@@ -3015,7 +3041,17 @@ class App:
         return tray_sync_label(self.any_running(), self.cm.config.language)
 
     def _tray_status_label(self, _item=None):
-        return tray_status_label(self.any_running(), self.cm.config.language)
+        return tray_status_label(
+            self.any_running(),
+            self.cm.config.language,
+            self._runtime_status_state(self.any_running()),
+        )
+
+    def _tray_show_label(self, _item=None):
+        return self.tr("tray.show")
+
+    def _tray_quit_label(self, _item=None):
+        return self.tr("tray.quit")
 
     def _tray_sync_checked(self, _item=None):
         return self.any_running()
@@ -3127,18 +3163,11 @@ class App:
     def _update_status_indicator(self, running: bool):
         p = current_palette()
         if running:
-            key = "ui.status.running"
-            enabled_indexes = self.get_enabled_project_indexes()
-            if len(enabled_indexes) > 1:
-                running_count = sum(
-                    1
-                    for index in enabled_indexes
-                    if getattr(self.get_sync_manager(index), "running", False)
-                )
-                if 0 < running_count < len(enabled_indexes):
-                    key = "ui.status.partial_running"
-            self.status_dot.configure(text_color=p["success"])
-            self.status_text.configure(text=self.tr(key), text_color=p["success"])
+            status = self._runtime_status_state(running)
+            key = f"ui.status.{status}"
+            status_color = p["warning"] if status in ("partial_error", "error") else p["success"]
+            self.status_dot.configure(text_color=status_color)
+            self.status_text.configure(text=self.tr(key), text_color=status_color)
             self._status_indicator_state = "running"
         else:
             self.status_dot.configure(text_color=p["text_dim"])
@@ -3146,6 +3175,26 @@ class App:
             self.status_text.configure(text=self.tr(key), text_color=p["text_dim"])
             if self._status_indicator_state != "ready":
                 self._status_indicator_state = "stopped"
+
+    def _runtime_status_state(self, running: bool) -> str:
+        if not running:
+            return "stopped"
+        enabled_indexes = self.get_enabled_project_indexes()
+        has_error = any(
+            getattr(self.get_sync_manager(index), "has_error", False)
+            for index in enabled_indexes
+        )
+        if has_error:
+            return "partial_error" if len(enabled_indexes) > 1 else "error"
+        if len(enabled_indexes) > 1:
+            running_count = sum(
+                1
+                for index in enabled_indexes
+                if getattr(self.get_sync_manager(index), "running", False)
+            )
+            if 0 < running_count < len(enabled_indexes):
+                return "partial_running"
+        return "running"
 
     def _refresh_status_bar_texts(self):
         p = current_palette()
