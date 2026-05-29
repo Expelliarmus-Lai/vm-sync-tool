@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import ui
 from preflight import PreflightReport
 from syncer import LogEvent
 from ui import App, ConfigPanel, ControlPanel
@@ -18,6 +19,7 @@ class FakeProjectPanel:
         self.show_calls = 0
         self.hide_calls = 0
         self.config_enabled = []
+        self.grid_configure_calls = []
 
     def _append(self, event):
         self.log_panel.events.append(event)
@@ -42,6 +44,10 @@ class FakeProjectPanel:
         self.visible = False
         self.hide_calls += 1
 
+    def grid_configure(self, **kwargs):
+        self.grid_configure_calls.append(kwargs)
+        self.visible = True
+
 
 class FakeSync:
     def __init__(self, project_index=0, *, running=False, synced_count=0, bin_ready=False):
@@ -64,6 +70,18 @@ class FakeSync:
     def stop(self):
         self.stop_calls += 1
         self.running = False
+
+
+class FakeWindow:
+    def __init__(self):
+        self.geometry_calls = []
+        self.minsize_calls = []
+
+    def geometry(self, value):
+        self.geometry_calls.append(value)
+
+    def minsize(self, width, height):
+        self.minsize_calls.append((width, height))
 
 
 class MultiProjectUiTests(unittest.TestCase):
@@ -110,6 +128,7 @@ class MultiProjectUiTests(unittest.TestCase):
         App._set_project_enabled(app, 1, False)
         self.assertFalse(app.cm.config.projects[1].enabled)
         self.assertEqual(1, app.project_panels[1].hide_calls)
+        self.assertFalse(app.project_panels[1].visible)
 
     def test_poll_events_routes_each_manager_to_its_project_log_panel(self):
         app = object.__new__(App)
@@ -164,6 +183,53 @@ class MultiProjectUiTests(unittest.TestCase):
             ControlPanel._start(control)
 
         self.assertNotIn("thread_created", calls)
+
+    def test_project_columns_use_uniform_grid_with_minimum_width(self):
+        source = inspect.getsource(App._build_ui)
+
+        self.assertIn('uniform="project_columns"', source)
+        self.assertIn("PROJECT_COLUMN_MIN_WIDTH", source)
+        self.assertIn('sticky="nsew"', source)
+
+    def test_shared_vm_config_stretches_to_match_project_area(self):
+        source = inspect.getsource(App._build_ui)
+
+        self.assertIn("shared_vm_shell", source)
+        self.assertIn('sticky="ew"', source)
+        self.assertIn("CONTENT_SIDE_PADDING", source)
+        self.assertNotIn("self.shared_vm_panel.pack(fill=\"x\"", source)
+        self.assertNotIn("SHARED_VM_PANEL_WIDTH", source)
+        self.assertNotIn("self.shared_vm_panel.configure(width=", source)
+
+    def test_window_uses_single_project_size_until_project_2_is_enabled(self):
+        app = object.__new__(App)
+        app.window = FakeWindow()
+        app.cm = SimpleNamespace(
+            config=SimpleNamespace(
+                projects=[
+                    SimpleNamespace(enabled=True),
+                    SimpleNamespace(enabled=False),
+                ]
+            ),
+            save=lambda: None,
+        )
+        app.project_panels = {
+            0: FakeProjectPanel(),
+            1: FakeProjectPanel(),
+        }
+        app.sync_managers = [FakeSync(0), FakeSync(1)]
+        app.add_project_btn = SimpleNamespace(
+            pack_forget=lambda: None,
+            pack=lambda **_kwargs: None,
+        )
+
+        App._set_project_enabled(app, 1, True, save=False)
+        self.assertEqual(ui.DUAL_PROJECT_GEOMETRY, app.window.geometry_calls[-1])
+        self.assertEqual(ui.DUAL_PROJECT_MIN_SIZE, app.window.minsize_calls[-1])
+
+        App._set_project_enabled(app, 1, False, save=False)
+        self.assertEqual(ui.SINGLE_PROJECT_GEOMETRY, app.window.geometry_calls[-1])
+        self.assertEqual(ui.SINGLE_PROJECT_MIN_SIZE, app.window.minsize_calls[-1])
 
 
 if __name__ == "__main__":

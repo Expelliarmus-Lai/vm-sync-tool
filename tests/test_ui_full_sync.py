@@ -187,6 +187,12 @@ class FullSyncUiTests(unittest.TestCase):
         self.assertIn('"check",\n            18', source)
         self.assertIn('"upload",\n            18', source)
 
+    def test_save_check_button_has_comfortable_text_padding(self):
+        source = inspect.getsource(ConfigPanel._build)
+
+        self.assertIn("SAVE_CHECK_BUTTON_WIDTH", source)
+        self.assertIn("ACTION_BUTTON_BORDER_SPACING", source)
+
     def test_save_check_status_uses_log_icons_only_in_config_hint(self):
         save_source = inspect.getsource(ConfigPanel.save_and_check)
         control_source = inspect.getsource(ControlPanel)
@@ -201,8 +207,10 @@ class FullSyncUiTests(unittest.TestCase):
     def test_main_window_starts_large_and_has_no_small_max_size_cap(self):
         source = inspect.getsource(App.__init__)
 
-        self.assertIn('geometry("760x860")', source)
-        self.assertIn("minsize(680, 720)", source)
+        self.assertIn("SINGLE_PROJECT_GEOMETRY", source)
+        self.assertIn("SINGLE_PROJECT_MIN_SIZE", source)
+        self.assertNotIn('geometry("760x860")', source)
+        self.assertNotIn("minsize(680, 720)", source)
         self.assertNotIn("maxsize(900, 780)", source)
 
     def test_polling_and_stats_avoid_unnecessary_repaints(self):

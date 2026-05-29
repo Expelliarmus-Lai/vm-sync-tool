@@ -26,6 +26,15 @@ from vmrun_resolver import list_running_vms, normalize_vmx_path, resolve_vmrun_p
 FONT_FAMILY = "Microsoft YaHei UI"
 MONO_FAMILY = "Microsoft YaHei"
 APP_USER_MODEL_ID = "vm-sync-tool.vm-sync"
+SINGLE_PROJECT_GEOMETRY = "760x860"
+SINGLE_PROJECT_MIN_SIZE = (680, 720)
+DUAL_PROJECT_GEOMETRY = "1180x900"
+DUAL_PROJECT_MIN_SIZE = (1080, 760)
+CONTENT_SIDE_PADDING = 14
+PROJECT_COLUMN_GAP = 8
+PROJECT_COLUMN_MIN_WIDTH = 500
+SAVE_CHECK_BUTTON_WIDTH = 148
+ACTION_BUTTON_BORDER_SPACING = 6
 
 
 def ui_font(size=13, weight="normal"):
@@ -799,8 +808,9 @@ class ConfigPanel(ctk.CTkFrame):
             text=self._tr("ui.button.save_check"),
             image=self._save_icon,
             compound="left",
-            width=124,
+            width=SAVE_CHECK_BUTTON_WIDTH,
             height=32,
+            border_spacing=ACTION_BUTTON_BORDER_SPACING,
             corner_radius=6, font=ui_font(size=12),
             fg_color=current_palette()["accent"],
             hover_color=current_palette()["accent_hover"],
@@ -2277,8 +2287,8 @@ class App:
         set_windows_app_user_model_id()
         self.window = ctk.CTk()
         self.window.title("VM Sync")
-        self.window.geometry("760x860")
-        self.window.minsize(680, 720)
+        self.window.geometry(SINGLE_PROJECT_GEOMETRY)
+        self.window.minsize(*SINGLE_PROJECT_MIN_SIZE)
         self._apply_window_icon()
 
         self._current_appearance = ctk.get_appearance_mode()
@@ -2369,6 +2379,60 @@ class App:
         for panel in getattr(self, "project_panels", {}).values():
             panel.set_config_enabled(enabled)
 
+    def _has_secondary_project_enabled(self) -> bool:
+        projects = getattr(self.cm.config, "projects", [])
+        return any(
+            getattr(project, "enabled", False)
+            for project in projects[1:2]
+        )
+
+    def _resize_window_for_project_layout(self, dual_project: bool):
+        geometry = DUAL_PROJECT_GEOMETRY if dual_project else SINGLE_PROJECT_GEOMETRY
+        min_size = DUAL_PROJECT_MIN_SIZE if dual_project else SINGLE_PROJECT_MIN_SIZE
+        window = getattr(self, "window", None)
+        if window is None:
+            return
+        try:
+            window.minsize(*min_size)
+            window.geometry(geometry)
+        except tk.TclError:
+            return
+
+    def _apply_project_layout_mode(self):
+        dual_project = self._has_secondary_project_enabled()
+        frame = getattr(self, "project_panels_frame", None)
+        if frame is not None:
+            if dual_project:
+                frame.grid_columnconfigure(
+                    0,
+                    weight=1,
+                    uniform="project_columns",
+                    minsize=PROJECT_COLUMN_MIN_WIDTH,
+                )
+                frame.grid_columnconfigure(
+                    1,
+                    weight=1,
+                    uniform="project_columns",
+                    minsize=PROJECT_COLUMN_MIN_WIDTH,
+                )
+            else:
+                frame.grid_columnconfigure(0, weight=1, uniform="", minsize=0)
+                frame.grid_columnconfigure(1, weight=0, uniform="", minsize=0)
+
+        panels = getattr(self, "project_panels", {})
+        project_1 = panels.get(0)
+        project_2 = panels.get(1)
+        if project_1 is not None and hasattr(project_1, "grid_configure"):
+            project_1.grid_configure(
+                padx=(0, PROJECT_COLUMN_GAP) if dual_project else (0, 0)
+            )
+        if dual_project and project_2 is not None and hasattr(project_2, "grid_configure"):
+            project_2.grid_configure(
+                padx=(PROJECT_COLUMN_GAP, 0)
+            )
+
+        self._resize_window_for_project_layout(dual_project)
+
     def _set_project_enabled(self, project_index: int, enabled: bool, save: bool = True):
         projects = getattr(self.cm.config, "projects", [])
         if not (0 <= project_index < len(projects)):
@@ -2391,6 +2455,7 @@ class App:
             add_button.pack_forget()
             if not enabled:
                 add_button.pack(side="right")
+        self._apply_project_layout_mode()
         if save:
             self.cm.save()
 
@@ -2457,10 +2522,10 @@ class App:
         self.scroll_area.pack(fill="both", expand=True, padx=4, pady=(0, 4))
 
         self.config_panel = ConfigPanel(self.scroll_area.inner, self)
-        self.config_panel.pack(fill="x", padx=14, pady=(4, 4))
+        self.config_panel.pack(fill="x", padx=CONTENT_SIDE_PADDING, pady=(4, 4))
 
         self.log_panel = LogPanel(self.scroll_area.inner, self)
-        self.log_panel.pack(fill="x", padx=14, pady=(0, 4))
+        self.log_panel.pack(fill="x", padx=CONTENT_SIDE_PADDING, pady=(0, 4))
         self.scroll_area.add_wheel_exclusion(self.log_panel.textbox)
         self.scroll_area.add_wheel_exclusion(
             getattr(self.log_panel.textbox, "_textbox", None)
@@ -2469,11 +2534,19 @@ class App:
         self.config_panel.pack_forget()
         self.log_panel.pack_forget()
 
-        self.shared_vm_panel = SharedVmPanel(self.scroll_area.inner, self)
-        self.shared_vm_panel.pack(fill="x", padx=14, pady=(4, 4))
+        self.shared_vm_shell = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
+        self.shared_vm_shell.pack(
+            fill="x",
+            padx=CONTENT_SIDE_PADDING,
+            pady=(4, 4),
+        )
+        self.shared_vm_shell.grid_columnconfigure(0, weight=1)
+
+        self.shared_vm_panel = SharedVmPanel(self.shared_vm_shell, self)
+        self.shared_vm_panel.grid(row=0, column=0, sticky="ew")
 
         self.project_action_row = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
-        self.project_action_row.pack(fill="x", padx=14, pady=(0, 6))
+        self.project_action_row.pack(fill="x", padx=CONTENT_SIDE_PADDING, pady=(0, 6))
 
         self.add_project_btn = ctk.CTkButton(
             self.project_action_row,
@@ -2490,14 +2563,35 @@ class App:
         self.add_project_btn.pack(side="right")
 
         self.project_panels_frame = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
-        self.project_panels_frame.pack(fill="both", expand=True, padx=14, pady=(0, 4))
-        self.project_panels_frame.grid_columnconfigure(0, weight=1)
-        self.project_panels_frame.grid_columnconfigure(1, weight=1)
+        self.project_panels_frame.pack(
+            fill="both",
+            expand=True,
+            padx=CONTENT_SIDE_PADDING,
+            pady=(0, 4),
+        )
+        self.project_panels_frame.grid_rowconfigure(0, weight=1)
+        self.project_panels_frame.grid_columnconfigure(
+            0,
+            weight=1,
+            uniform="project_columns",
+            minsize=PROJECT_COLUMN_MIN_WIDTH,
+        )
+        self.project_panels_frame.grid_columnconfigure(
+            1,
+            weight=1,
+            uniform="project_columns",
+            minsize=PROJECT_COLUMN_MIN_WIDTH,
+        )
 
         self.project_panels = {}
         for index in range(min(2, len(self.sync_managers))):
             panel = ProjectPane(self.project_panels_frame, self, index)
-            panel.grid(row=0, column=index, sticky="nsew", padx=(0, 8) if index == 0 else (8, 0))
+            panel.grid(
+                row=0,
+                column=index,
+                sticky="nsew",
+                padx=(0, PROJECT_COLUMN_GAP) if index == 0 else (PROJECT_COLUMN_GAP, 0),
+            )
             self.project_panels[index] = panel
             self.scroll_area.add_wheel_exclusion(panel.log_panel.textbox)
             self.scroll_area.add_wheel_exclusion(
