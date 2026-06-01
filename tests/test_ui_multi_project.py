@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import ui
+from i18n import Translator
 from preflight import PreflightReport
 from syncer import LogEvent, LogIcon
 from ui import App, ConfigPanel, ControlPanel
@@ -106,9 +107,17 @@ class FakeWindow:
 class FakeButton:
     def __init__(self):
         self.configures = []
+        self.pack_calls = []
+        self.pack_forget_calls = 0
 
     def configure(self, **kwargs):
         self.configures.append(kwargs)
+
+    def pack(self, **kwargs):
+        self.pack_calls.append(kwargs)
+
+    def pack_forget(self):
+        self.pack_forget_calls += 1
 
 
 class FakeLabel:
@@ -155,6 +164,29 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertIn("pause_btn", source)
         self.assertIn("_start_project", source)
         self.assertIn("_pause_project", source)
+        self.assertIn("PROJECT_RUN_BUTTON_WIDTH", source)
+        self.assertIn("PROJECT_RUN_BUTTON_HEIGHT", source)
+        self.assertEqual(84, ui.PROJECT_RUN_BUTTON_WIDTH)
+        self.assertEqual(30, ui.PROJECT_RUN_BUTTON_HEIGHT)
+
+    def test_project_header_actions_align_with_config_card_edge(self):
+        source = inspect.getsource(ui.ProjectPane.__init__)
+
+        self.assertIn('header.pack(fill="x", padx=0', source)
+        self.assertNotIn('header.pack(fill="x", padx=4', source)
+        self.assertIn('self.pause_btn.pack(side="right")', source)
+        self.assertNotIn('self.pause_btn.pack(side="right", padx=(0, 6))', source)
+
+    def test_add_project_button_uses_requested_word_order(self):
+        self.assertEqual("添加同步项目", Translator("zh").tr("ui.button.add_project"))
+
+    def test_project_disable_button_is_in_action_row_not_project_header(self):
+        build_source = inspect.getsource(App._build_ui)
+        pane_source = inspect.getsource(ui.ProjectPane.__init__)
+
+        self.assertIn("remove_project_btn", build_source)
+        self.assertIn("self._set_project_enabled(1, False)", build_source)
+        self.assertNotIn("ui.button.remove_project", pane_source)
 
     def test_set_project_enabled_updates_config_and_visibility(self):
         app = object.__new__(App)
@@ -181,6 +213,34 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertFalse(app.cm.config.projects[1].enabled)
         self.assertEqual(1, app.project_panels[1].hide_calls)
         self.assertFalse(app.project_panels[1].visible)
+
+    def test_project_2_action_row_swaps_add_and_disable_buttons(self):
+        app = object.__new__(App)
+        app.cm = SimpleNamespace(
+            config=SimpleNamespace(
+                projects=[
+                    SimpleNamespace(enabled=True),
+                    SimpleNamespace(enabled=False),
+                ]
+            ),
+            save=lambda: None,
+        )
+        app.project_panels = {
+            0: FakeProjectPanel(),
+            1: FakeProjectPanel(),
+        }
+        app.sync_managers = [FakeSync(0), FakeSync(1)]
+        app.add_project_btn = FakeButton()
+        app.remove_project_btn = FakeButton()
+        app.window = FakeWindow()
+
+        App._set_project_enabled(app, 1, True, save=False)
+        self.assertEqual(1, app.add_project_btn.pack_forget_calls)
+        self.assertEqual([{"side": "right"}], app.remove_project_btn.pack_calls)
+
+        App._set_project_enabled(app, 1, False, save=False)
+        self.assertEqual(2, app.remove_project_btn.pack_forget_calls)
+        self.assertEqual([{"side": "right"}], app.add_project_btn.pack_calls)
 
     def test_disabling_project_cancels_project_full_sync_before_hiding(self):
         app = object.__new__(App)
@@ -214,8 +274,10 @@ class MultiProjectUiTests(unittest.TestCase):
         app._shutting_down = False
         app._maybe_check_appearance_change = lambda: None
         app._schedule_after = lambda *_args, **_kwargs: None
-        app._on_bin_ready = lambda _filename: None
-        app._on_bin_unchanged = lambda _filename: None
+        bin_ready_events = []
+        bin_unchanged_events = []
+        app._on_bin_ready = lambda filename, project_index=0: bin_ready_events.append((project_index, filename))
+        app._on_bin_unchanged = lambda filename, project_index=0: bin_unchanged_events.append((project_index, filename))
         app.sync_managers = [
             FakeSync(0, synced_count=3, bin_ready=True),
             FakeSync(1, synced_count=7, bin_ready=False),
@@ -228,53 +290,86 @@ class MultiProjectUiTests(unittest.TestCase):
 
         app.sync_managers[0].event_queue.put(("log", LogEvent("i", "project-1", "info")))
         app.sync_managers[1].event_queue.put(("log", LogEvent("i", "project-2", "info")))
+        app.sync_managers[0].event_queue.put(("bin_ready", "same-name.bin"))
+        app.sync_managers[1].event_queue.put(("bin_unchanged", "same-name.bin"))
 
         App._poll_events(app)
 
         self.assertEqual("project-1", app.project_panels[0].log_panel.events[0].message)
         self.assertEqual("project-2", app.project_panels[1].log_panel.events[0].message)
+        self.assertEqual([(0, "same-name.bin")], bin_ready_events)
+        self.assertEqual([(1, "same-name.bin")], bin_unchanged_events)
         self.assertIn((3, True), app.project_panels[0].stats_updates)
         self.assertIn((7, False), app.project_panels[1].stats_updates)
 
     def test_start_all_is_atomic_across_enabled_projects(self):
         calls = []
 
-        class FakeThread:
-            def __init__(self, target, daemon=False):
-                self.target = target
-                self.daemon = daemon
-                calls.append("thread_created")
-
-            def start(self):
-                calls.append("thread_started")
+        syncs = [FakeSync(0), FakeSync(1)]
 
         control = object.__new__(ControlPanel)
         control.app = SimpleNamespace(
             project_panels={
-                0: FakeProjectPanel(report=PreflightReport()),
-                1: FakeProjectPanel(report=PreflightReport(errors=["bad project 2"])),
+                0: FakeProjectPanel(),
+                1: FakeProjectPanel(),
             },
             get_enabled_project_indexes=lambda: [0, 1],
+            get_sync_manager=lambda index: syncs[index],
+            sync_managers=syncs,
+            _collect_preflight_report=lambda project_index=0, **_kwargs: (
+                PreflightReport(errors=["bad project 2"])
+                if project_index == 1
+                else PreflightReport()
+            ),
+            _emit_preflight_report=lambda _report, **_kwargs: None,
+            set_all_config_enabled=lambda _enabled: None,
+            _update_status_indicator=lambda _running: None,
+            _update_tray_menu=lambda: None,
+            cm=SimpleNamespace(config=SimpleNamespace(language="zh")),
         )
         control.start_btn = SimpleNamespace(configure=lambda **_kwargs: calls.append("start_btn"))
+        control.pause_btn = FakeButton()
+        control.uptime_label = FakeButton()
+        control.after = lambda _delay, callback: callback()
+        control._start_time = None
+        control._last_uptime_text = ""
 
-        with patch("ui.threading.Thread", FakeThread):
+        with patch("ui.threading.Thread", ImmediateThread):
             ControlPanel._start(control)
 
-        self.assertNotIn("thread_created", calls)
+        self.assertEqual([], syncs[0].start_calls)
+        self.assertEqual([], syncs[1].start_calls)
 
     def test_start_all_logs_to_passed_project_when_another_project_fails_preflight(self):
         control = object.__new__(ControlPanel)
-        project_1 = FakeProjectPanel(report=PreflightReport())
-        project_2 = FakeProjectPanel(report=PreflightReport(errors=["bad project 2"]))
+        project_1 = FakeProjectPanel()
+        project_2 = FakeProjectPanel()
+        syncs = [FakeSync(0), FakeSync(1)]
         control.app = SimpleNamespace(
             project_panels={0: project_1, 1: project_2},
             get_enabled_project_indexes=lambda: [0, 1],
+            get_sync_manager=lambda index: syncs[index],
+            sync_managers=syncs,
+            _collect_preflight_report=lambda project_index=0, **_kwargs: (
+                PreflightReport(errors=["bad project 2"])
+                if project_index == 1
+                else PreflightReport()
+            ),
+            _emit_preflight_report=lambda _report, **_kwargs: None,
+            set_all_config_enabled=lambda _enabled: None,
+            _update_status_indicator=lambda _running: None,
+            _update_tray_menu=lambda: None,
             cm=SimpleNamespace(config=SimpleNamespace(language="zh")),
         )
         control.start_btn = FakeButton()
+        control.pause_btn = FakeButton()
+        control.uptime_label = FakeButton()
+        control.after = lambda _delay, callback: callback()
+        control._start_time = None
+        control._last_uptime_text = ""
 
-        ControlPanel._start(control)
+        with patch("ui.threading.Thread", ImmediateThread):
+            ControlPanel._start(control)
 
         self.assertEqual([], project_2.log_panel.events)
         self.assertEqual(1, len(project_1.log_panel.events))
@@ -283,6 +378,48 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertIn("项目 2", event.message)
         self.assertIn("未启动", event.message)
         self.assertIn("配置", event.message)
+
+    def test_start_all_emits_preflight_reports_before_starting_projects(self):
+        calls = []
+
+        class OrderedSync(FakeSync):
+            def start(self, **kwargs):
+                calls.append(("start", self.project_index))
+                return super().start(**kwargs)
+
+        syncs = [OrderedSync(0), OrderedSync(1)]
+        control = object.__new__(ControlPanel)
+        control.app = SimpleNamespace(
+            project_panels={
+                0: FakeProjectPanel(),
+                1: FakeProjectPanel(),
+            },
+            get_enabled_project_indexes=lambda: [0, 1],
+            get_sync_manager=lambda index: syncs[index],
+            sync_managers=syncs,
+            _collect_preflight_report=lambda project_index=0, **_kwargs: PreflightReport(
+                warnings=[f"warn {project_index + 1}"]
+            ),
+            _emit_preflight_report=lambda _report, project_index=None, **_kwargs: calls.append(
+                ("preflight", project_index)
+            ),
+            set_all_config_enabled=lambda _enabled: None,
+            _update_status_indicator=lambda _running: None,
+            _update_tray_menu=lambda: None,
+            cm=SimpleNamespace(config=SimpleNamespace(language="zh")),
+        )
+        control.start_btn = FakeButton()
+        control.pause_btn = FakeButton()
+        control.uptime_label = FakeButton()
+        control.after = lambda _delay, callback: callback()
+        control._start_time = None
+        control._last_uptime_text = ""
+
+        with patch("ui.threading.Thread", ImmediateThread):
+            ControlPanel._start(control)
+
+        self.assertLess(calls.index(("preflight", 0)), calls.index(("start", 0)))
+        self.assertLess(calls.index(("preflight", 1)), calls.index(("start", 1)))
 
     def test_top_start_and_pause_all_updates_project_controls(self):
         control = object.__new__(ControlPanel)
@@ -325,7 +462,9 @@ class MultiProjectUiTests(unittest.TestCase):
             _update_tray_menu=lambda: None,
         )
         pane.config_panel = SimpleNamespace(
-            save_and_check=lambda: PreflightReport(),
+            _save_values_only=lambda emit_log=False: None,
+            mark_start_checking=lambda: None,
+            apply_preflight_report=lambda _report: None,
             set_config_enabled=lambda _enabled: None,
         )
         pane.log_panel = SimpleNamespace(append=lambda _event: None)
@@ -333,6 +472,8 @@ class MultiProjectUiTests(unittest.TestCase):
         pane.pause_btn = FakeButton()
         pane.toggle_btn = FakeButton()
         pane.after = lambda _delay, callback: callback()
+        pane.app._collect_preflight_report = lambda **_kwargs: PreflightReport()
+        pane.app._emit_preflight_report = lambda _report, **_kwargs: None
 
         with patch("ui.threading.Thread", ImmediateThread):
             ui.ProjectPane._start_project(pane)
@@ -341,6 +482,44 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertEqual(1, len(syncs[1].start_calls))
         self.assertTrue(syncs[1].start_calls[0]["preflight_checked"])
         self.assertEqual([False, False], config_enabled)
+
+    def test_project_pane_emits_preflight_report_before_starting_sync(self):
+        calls = []
+
+        class OrderedSync(FakeSync):
+            def start(self, **kwargs):
+                calls.append("start")
+                return super().start(**kwargs)
+
+        sync = OrderedSync(0)
+        pane = object.__new__(ui.ProjectPane)
+        pane.project_index = 0
+        pane.app = SimpleNamespace(
+            get_sync_manager=lambda _index: sync,
+            set_all_config_enabled=lambda _enabled: None,
+            any_running=lambda: sync.running,
+            control=None,
+            _update_status_indicator=lambda _running: None,
+            _update_tray_menu=lambda: None,
+            _collect_preflight_report=lambda **_kwargs: PreflightReport(warnings=["warn"]),
+            _emit_preflight_report=lambda _report, **_kwargs: calls.append("preflight"),
+        )
+        pane.config_panel = SimpleNamespace(
+            _save_values_only=lambda emit_log=False: None,
+            mark_start_checking=lambda: None,
+            apply_preflight_report=lambda _report: None,
+            set_config_enabled=lambda _enabled: None,
+        )
+        pane.log_panel = SimpleNamespace(append=lambda _event: None)
+        pane.start_btn = FakeButton()
+        pane.pause_btn = FakeButton()
+        pane.toggle_btn = None
+        pane.after = lambda _delay, callback: callback()
+
+        with patch("ui.threading.Thread", ImmediateThread):
+            ui.ProjectPane._start_project(pane)
+
+        self.assertLess(calls.index("preflight"), calls.index("start"))
 
     def test_project_pane_pause_stops_only_its_project_manager(self):
         syncs = [FakeSync(0, running=True), FakeSync(1, running=True)]
@@ -407,10 +586,14 @@ class MultiProjectUiTests(unittest.TestCase):
         )
 
         App._set_project_enabled(app, 1, True, save=False)
+        self.assertEqual("1180x955", ui.DUAL_PROJECT_GEOMETRY)
+        self.assertEqual((1040, 740), ui.DUAL_PROJECT_MIN_SIZE)
         self.assertEqual(ui.DUAL_PROJECT_GEOMETRY, app.window.geometry_calls[-1])
         self.assertEqual(ui.DUAL_PROJECT_MIN_SIZE, app.window.minsize_calls[-1])
 
         App._set_project_enabled(app, 1, False, save=False)
+        self.assertEqual("700x955", ui.SINGLE_PROJECT_GEOMETRY)
+        self.assertEqual((640, 720), ui.SINGLE_PROJECT_MIN_SIZE)
         self.assertEqual(ui.SINGLE_PROJECT_GEOMETRY, app.window.geometry_calls[-1])
         self.assertEqual(ui.SINGLE_PROJECT_MIN_SIZE, app.window.minsize_calls[-1])
 

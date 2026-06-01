@@ -33,7 +33,7 @@ class StartButtonTests(unittest.TestCase):
         source = inspect.getsource(ControlPanel._start)
 
         self.assertIn("threading.Thread", source)
-        self.assertIn("save_and_check", source)
+        self.assertNotIn("save_and_check()", source)
 
     def test_start_worker_uses_prechecked_fast_start(self):
         calls = []
@@ -63,16 +63,22 @@ class StartButtonTests(unittest.TestCase):
         )
         self.assertIn(("finish", True, ""), calls)
 
-    def test_start_button_runs_save_check_before_background_start(self):
+    def test_start_button_saves_values_and_defers_preflight_to_background(self):
         calls = []
 
         class FakeConfigPanel:
-            def save_and_check(self):
-                calls.append("save_and_check")
-                return PreflightReport()
+            def _save_values_only(self, emit_log=False):
+                calls.append(("save_values", emit_log))
+
+            def mark_start_checking(self):
+                calls.append("mark_checking")
 
             def set_config_enabled(self, enabled):
                 calls.append(("config_enabled", enabled))
+
+            def save_and_check(self):
+                calls.append("save_and_check")
+                raise AssertionError("start should not run slow preflight on the UI thread")
 
         class FakeThread:
             def __init__(self, target, daemon=False):
@@ -100,36 +106,46 @@ class StartButtonTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                "save_and_check",
-                "snapshot",
+                ("save_values", True),
+                "mark_checking",
                 ("config_enabled", False),
                 "thread_created",
                 "thread_started",
             ],
             calls,
         )
-        self.assertEqual(("saved-config",), panel._start_preflight_snapshot)
+        self.assertIsNone(panel._start_preflight_snapshot)
 
-    def test_start_button_does_not_start_when_save_check_fails(self):
+    def test_start_worker_does_not_start_when_background_preflight_fails(self):
         calls = []
 
-        class FakeConfigPanel:
-            def save_and_check(self):
-                calls.append("save_and_check")
-                return PreflightReport(errors=["bad path"])
+        class FakeSync:
+            running = False
 
-            def set_config_enabled(self, enabled):
-                calls.append(("config_enabled", enabled))
+            def start(self, **_kwargs):
+                calls.append("start")
+                raise AssertionError("sync should not start after failed preflight")
 
         panel = object.__new__(ControlPanel)
-        panel.app = SimpleNamespace(config_panel=FakeConfigPanel())
+        panel.app = SimpleNamespace(
+            sync=FakeSync(),
+            sync_managers=[FakeSync()],
+            get_sync_manager=lambda _index=0: panel.app.sync_managers[0],
+            _collect_preflight_report=lambda **_kwargs: PreflightReport(errors=["bad path"]),
+            _emit_preflight_report=lambda report, **_kwargs: calls.append(("preflight", report.ok)),
+            project_panels={},
+        )
         panel.start_btn = FakeButton()
+        panel.pause_btn = FakeButton()
+        panel.uptime_label = FakeLabel()
+        panel.after = lambda _delay, callback: callback()
+        panel._set_stopped = lambda: calls.append("stopped")
+        panel._enabled_project_indexes = lambda: [0]
+        panel._start_preflight_snapshots = {}
 
-        with patch("ui.threading.Thread", side_effect=AssertionError("should not start")):
-            ControlPanel._start(panel)
+        ControlPanel._start_worker(panel)
 
-        self.assertEqual(["save_and_check"], calls)
-        self.assertEqual([], panel.start_btn.configures)
+        self.assertEqual([("preflight", False), "stopped"], calls)
 
     def test_repeated_preflight_errors_are_deduplicated(self):
         source = inspect.getsource(App._run_preflight)

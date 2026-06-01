@@ -34,7 +34,7 @@ class LogIcon:
     SUCCESS = "✅"
     ERROR = "❌"
     WARNING = "⚠️"
-    INFO = "ℹ️"
+    INFO = "💡"
     CHECK = "🔍"
     CONFIG = "💾"
     WATCH = "👀"
@@ -214,6 +214,7 @@ class SyncManager:
         self._defer_startup_bin_baseline()
         self._stop_requested = False
         self._incremental_sync_suspended = False
+        self._emit("info", LogIcon.CHECK, self._tr("sync.host_baseline_start"))
         self._prime_host_file_signatures()
         run_token = self._advance_run_token()
         self._running = True

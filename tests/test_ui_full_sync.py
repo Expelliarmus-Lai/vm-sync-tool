@@ -3,8 +3,9 @@ import tkinter as tk
 import unittest
 from types import SimpleNamespace
 
+import ui
 from i18n import Translator
-from ui import App, AutoScrollFrame, ConfigPanel, ControlPanel, DARK, LIGHT
+from ui import App, AutoScrollFrame, ConfigPanel, ControlPanel, DARK, LIGHT, SAVE_CHECK_BUTTON_WIDTH
 
 
 class FullSyncUiTests(unittest.TestCase):
@@ -191,10 +192,29 @@ class FullSyncUiTests(unittest.TestCase):
         source = inspect.getsource(ConfigPanel._build)
 
         self.assertIn("SAVE_CHECK_BUTTON_WIDTH", source)
+        self.assertIn("FULL_SYNC_BUTTON_WIDTH", source)
+        self.assertIn("CONFIG_ACTION_BUTTON_HEIGHT", source)
         self.assertIn("ACTION_BUTTON_BORDER_SPACING", source)
+        self.assertEqual(SAVE_CHECK_BUTTON_WIDTH, ui.FULL_SYNC_BUTTON_WIDTH)
+        self.assertEqual(144, ui.SAVE_CHECK_BUTTON_WIDTH)
+        self.assertEqual(32, ui.CONFIG_ACTION_BUTTON_HEIGHT)
+
+    def test_controls_use_consistent_corner_radii(self):
+        source = "\n".join(
+            [
+                inspect.getsource(ConfigPanel),
+                inspect.getsource(ui.SharedVmPanel),
+                inspect.getsource(ui.ProjectPane),
+                inspect.getsource(App._build_ui),
+            ]
+        )
+
+        self.assertNotIn("corner_radius=7", source)
+        self.assertIn("CARD_CORNER_RADIUS", source)
+        self.assertIn("CONTROL_CORNER_RADIUS", source)
 
     def test_save_check_status_uses_log_icons_only_in_config_hint(self):
-        save_source = inspect.getsource(ConfigPanel.save_and_check)
+        save_source = inspect.getsource(ConfigPanel.apply_preflight_report)
         control_source = inspect.getsource(ControlPanel)
 
         for icon_name in ("WARNING", "SUCCESS", "ERROR"):

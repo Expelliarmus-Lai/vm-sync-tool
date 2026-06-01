@@ -26,15 +26,23 @@ from vmrun_resolver import list_running_vms, normalize_vmx_path, resolve_vmrun_p
 FONT_FAMILY = "Microsoft YaHei UI"
 MONO_FAMILY = "Microsoft YaHei"
 APP_USER_MODEL_ID = "vm-sync-tool.vm-sync"
-SINGLE_PROJECT_GEOMETRY = "760x860"
-SINGLE_PROJECT_MIN_SIZE = (680, 720)
-DUAL_PROJECT_GEOMETRY = "1180x900"
-DUAL_PROJECT_MIN_SIZE = (1080, 760)
+TRAY_START_ICON = "▶"
+TRAY_PAUSE_ICON = "⏸"
+SINGLE_PROJECT_GEOMETRY = "700x955"
+SINGLE_PROJECT_MIN_SIZE = (640, 720)
+DUAL_PROJECT_GEOMETRY = "1180x955"
+DUAL_PROJECT_MIN_SIZE = (1040, 740)
+CARD_CORNER_RADIUS = 8
+CONTROL_CORNER_RADIUS = 6
 CONTENT_SIDE_PADDING = 14
 PROJECT_COLUMN_GAP = 8
-PROJECT_COLUMN_MIN_WIDTH = 500
-SAVE_CHECK_BUTTON_WIDTH = 148
-ACTION_BUTTON_BORDER_SPACING = 6
+PROJECT_COLUMN_MIN_WIDTH = 480
+PROJECT_RUN_BUTTON_WIDTH = 84
+PROJECT_RUN_BUTTON_HEIGHT = 30
+SAVE_CHECK_BUTTON_WIDTH = 144
+FULL_SYNC_BUTTON_WIDTH = SAVE_CHECK_BUTTON_WIDTH
+CONFIG_ACTION_BUTTON_HEIGHT = 32
+ACTION_BUTTON_BORDER_SPACING = 8
 
 
 def ui_font(size=13, weight="normal"):
@@ -418,6 +426,17 @@ def create_tray_icon():
     return create_app_icon(32)
 
 
+class TrayActivationMenu(pystray.Menu):
+    """Menu that can highlight one item while tray icon activation runs another action."""
+
+    def __init__(self, activation_action, *items):
+        super().__init__(*items)
+        self._activation_action = activation_action
+
+    def __call__(self, icon):
+        self._activation_action()
+
+
 def set_windows_app_user_model_id():
     """Let Windows group this pythonw process under the app icon, not Python."""
     if os.name != "nt":
@@ -432,7 +451,9 @@ def set_windows_app_user_model_id():
 
 def tray_sync_label(running: bool, language: str = "zh") -> str:
     t = Translator(language).tr
-    return t("tray.sync.pause") if running else t("tray.sync.start")
+    if running:
+        return f"{TRAY_PAUSE_ICON}  {t('tray.sync.pause')}"
+    return f"{TRAY_START_ICON}  {t('tray.sync.start')}"
 
 
 def tray_status_label(
@@ -490,7 +511,7 @@ class ControlPanel(ctk.CTkFrame):
             font=ui_font(size=14, weight="bold"),
             width=132,
             height=40,
-            corner_radius=8,
+            corner_radius=CONTROL_CORNER_RADIUS,
             fg_color=p["accent"],
             hover_color=p["accent_hover"],
             text_color=p["button_text"],
@@ -507,7 +528,7 @@ class ControlPanel(ctk.CTkFrame):
             font=ui_font(size=14, weight="bold"),
             width=132,
             height=40,
-            corner_radius=8,
+            corner_radius=CONTROL_CORNER_RADIUS,
             fg_color=p["muted_button"],
             hover_color=p["muted_hover"],
             text_color=p["text_dim"],
@@ -735,7 +756,7 @@ class ConfigPanel(ctk.CTkFrame):
     def __init__(self, master, app: "App"):
         super().__init__(master, fg_color=current_palette()["card"],
                          border_color=current_palette()["border"], border_width=1,
-                         corner_radius=8)
+                         corner_radius=CARD_CORNER_RADIUS)
         self.app = app
         self._entries = {}
         self._field_labels = {}
@@ -804,7 +825,7 @@ class ConfigPanel(ctk.CTkFrame):
             anchor="w",
             justify="left",
             height=24,
-            corner_radius=6,
+            corner_radius=CONTROL_CORNER_RADIUS,
             wraplength=620,
         )
         self.bin_resolved_label.pack(fill="x", padx=16, pady=(0, 4))
@@ -820,9 +841,9 @@ class ConfigPanel(ctk.CTkFrame):
             image=self._save_icon,
             compound="left",
             width=SAVE_CHECK_BUTTON_WIDTH,
-            height=32,
+            height=CONFIG_ACTION_BUTTON_HEIGHT,
             border_spacing=ACTION_BUTTON_BORDER_SPACING,
-            corner_radius=6, font=ui_font(size=12),
+            corner_radius=CONTROL_CORNER_RADIUS, font=ui_font(size=12),
             fg_color=current_palette()["accent"],
             hover_color=current_palette()["accent_hover"],
             text_color=current_palette()["button_text"],
@@ -835,9 +856,10 @@ class ConfigPanel(ctk.CTkFrame):
             text=self._tr("ui.button.full_sync"),
             image=self._sync_icon,
             compound="left",
-            width=114,
-            height=32,
-            corner_radius=6, font=ui_font(size=12),
+            width=FULL_SYNC_BUTTON_WIDTH,
+            height=CONFIG_ACTION_BUTTON_HEIGHT,
+            border_spacing=ACTION_BUTTON_BORDER_SPACING,
+            corner_radius=CONTROL_CORNER_RADIUS, font=ui_font(size=12),
             fg_color=current_palette()["warning"],
             hover_color=current_palette()["warning_hover"],
             text_color=current_palette()["warning_text"],
@@ -867,7 +889,7 @@ class ConfigPanel(ctk.CTkFrame):
 
         entry_kwargs = {"show": "*"} if mode == "password" else {}
         entry = ctk.CTkEntry(
-            row, height=30, corner_radius=6,
+            row, height=30, corner_radius=CONTROL_CORNER_RADIUS,
             font=ui_font(size=12),
             border_color=current_palette()["entry_border"],
             fg_color=current_palette()["entry_bg"],
@@ -891,7 +913,7 @@ class ConfigPanel(ctk.CTkFrame):
                 image=self._folder_icon,
                 width=42,
                 height=32,
-                corner_radius=7,
+                corner_radius=CONTROL_CORNER_RADIUS,
                 font=ui_font(size=12),
                 fg_color=current_palette()["muted_button"],
                 hover_color=current_palette()["muted_hover"],
@@ -1167,9 +1189,14 @@ class ConfigPanel(ctk.CTkFrame):
     def _save(self):
         self.save_and_check()
 
-    def save_and_check(self) -> PreflightReport:
-        self._save_values_only(emit_log=True)
-        report = self.app._run_preflight(dedupe_errors=False)
+    def mark_start_checking(self):
+        self.update_bin_path_hint(check_guest=False)
+        self.status_label.configure(
+            text=self._tr("ui.config.status.checking"),
+            text_color=current_palette()["text_dim"],
+        )
+
+    def apply_preflight_report(self, report: PreflightReport):
         self.update_bin_path_hint(check_guest=report.ok)
         p = current_palette()
         if report.ok and report.warning_text:
@@ -1179,6 +1206,11 @@ class ConfigPanel(ctk.CTkFrame):
         else:
             self.status_label.configure(text=self._tr("ui.config.status.error", icon=LogIcon.ERROR), text_color=p["error"])
         self.after(2000, lambda: self.status_label.configure(text=""))
+
+    def save_and_check(self) -> PreflightReport:
+        self._save_values_only(emit_log=True)
+        report = self.app._run_preflight(dedupe_errors=False)
+        self.apply_preflight_report(report)
         return report
 
     def _full_sync(self):
@@ -1317,7 +1349,7 @@ class LogPanel(ctk.CTkFrame):
     def __init__(self, master, app=None):
         super().__init__(master, fg_color=current_palette()["card"],
                          border_color=current_palette()["border"], border_width=1,
-                         corner_radius=8)
+                         corner_radius=CARD_CORNER_RADIUS)
         self.app = app
         self._header_icon = icon_image(
             "list",
@@ -1334,7 +1366,7 @@ class LogPanel(ctk.CTkFrame):
         )
 
         self.clear_btn = ctk.CTkButton(
-            header, text=self._tr("ui.button.clear"), width=52, height=26, corner_radius=6,
+            header, text=self._tr("ui.button.clear"), width=52, height=26, corner_radius=CONTROL_CORNER_RADIUS,
             font=ui_font(size=11),
             fg_color=current_palette()["muted_button"],
             hover_color=current_palette()["muted_hover"],
@@ -1368,7 +1400,7 @@ class LogPanel(ctk.CTkFrame):
             height=200,
             fg_color=current_palette()["log_bg"],
             border_color=current_palette()["entry_border"], border_width=1,
-            corner_radius=6, wrap="word",
+            corner_radius=CONTROL_CORNER_RADIUS, wrap="char",
         )
         self.textbox.pack(fill="x", padx=12, pady=(2, 10))
         self.textbox.configure(state="disabled")
@@ -1471,7 +1503,7 @@ class SharedVmPanel(ctk.CTkFrame):
             fg_color=current_palette()["card"],
             border_color=current_palette()["border"],
             border_width=1,
-            corner_radius=8,
+            corner_radius=CARD_CORNER_RADIUS,
         )
         self.app = app
         self._entries = {}
@@ -1521,7 +1553,7 @@ class SharedVmPanel(ctk.CTkFrame):
             entry = ctk.CTkEntry(
                 row,
                 height=30,
-                corner_radius=6,
+                corner_radius=CONTROL_CORNER_RADIUS,
                 font=ui_font(size=12),
                 border_color=current_palette()["entry_border"],
                 fg_color=current_palette()["entry_bg"],
@@ -1541,7 +1573,7 @@ class SharedVmPanel(ctk.CTkFrame):
                     image=self._folder_icon,
                     width=42,
                     height=32,
-                    corner_radius=7,
+                    corner_radius=CONTROL_CORNER_RADIUS,
                     font=ui_font(size=12),
                     fg_color=current_palette()["muted_button"],
                     hover_color=current_palette()["muted_hover"],
@@ -1662,12 +1694,12 @@ class MultiConfigPanel(_OriginalConfigPanel):
         return getattr(self.app, "log_panel", None)
 
     def _set_project_toggle_enabled(self, enabled: bool):
-        panels = getattr(self.app, "project_panels", None)
-        if not isinstance(panels, dict):
+        setter = getattr(self.app, "_set_secondary_project_action_enabled", None)
+        if self.project_index == 1 and callable(setter):
+            setter(enabled)
             return
-        panel = panels.get(self.project_index)
-        button = getattr(panel, "toggle_btn", None)
-        if button is not None:
+        button = getattr(self.app, "remove_project_btn", None)
+        if self.project_index == 1 and button is not None:
             button.configure(state="normal" if enabled else "disabled")
 
     def _add_field(self, parent, key, label_key, mode, placeholder_key):
@@ -1684,7 +1716,7 @@ class MultiConfigPanel(_OriginalConfigPanel):
         entry = ctk.CTkEntry(
             row,
             height=30,
-            corner_radius=6,
+            corner_radius=CONTROL_CORNER_RADIUS,
             font=ui_font(size=12),
             border_color=current_palette()["entry_border"],
             fg_color=current_palette()["entry_bg"],
@@ -1706,7 +1738,7 @@ class MultiConfigPanel(_OriginalConfigPanel):
                 image=self._folder_icon,
                 width=42,
                 height=32,
-                corner_radius=7,
+                corner_radius=CONTROL_CORNER_RADIUS,
                 font=ui_font(size=12),
                 fg_color=current_palette()["muted_button"],
                 hover_color=current_palette()["muted_hover"],
@@ -1845,15 +1877,7 @@ class MultiConfigPanel(_OriginalConfigPanel):
     def save_and_check(self) -> PreflightReport:
         self._save_values_only(emit_log=True)
         report = self.app._run_preflight(dedupe_errors=False, project_index=self.project_index)
-        self.update_bin_path_hint(check_guest=report.ok)
-        p = current_palette()
-        if report.ok and report.warning_text:
-            self.status_label.configure(text=self._tr("ui.config.status.warning", icon=LogIcon.WARNING), text_color=p["warning"])
-        elif report.ok:
-            self.status_label.configure(text=self._tr("ui.config.status.ok", icon=LogIcon.SUCCESS), text_color=p["success"])
-        else:
-            self.status_label.configure(text=self._tr("ui.config.status.error", icon=LogIcon.ERROR), text_color=p["error"])
-        self.after(2000, lambda: self.status_label.configure(text=""))
+        self.apply_preflight_report(report)
         return report
 
     def _full_sync(self):
@@ -1961,7 +1985,7 @@ class ProjectPane(ctk.CTkFrame):
             dark_color=DARK["warning_text"],
         )
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=4, pady=(0, 6))
+        header.pack(fill="x", padx=0, pady=(0, 6))
         self.title_label = ctk.CTkLabel(
             header,
             text=self._project_title(),
@@ -1971,47 +1995,33 @@ class ProjectPane(ctk.CTkFrame):
         )
         self.title_label.pack(side="left")
         self.toggle_btn = None
-        if self.project_index > 0:
-            self.toggle_btn = ctk.CTkButton(
-                header,
-                text=self._tr("ui.button.remove_project"),
-                width=110,
-                height=28,
-                corner_radius=6,
-                font=ui_font(size=11),
-                fg_color=current_palette()["muted_button"],
-                hover_color=current_palette()["muted_hover"],
-                text_color=current_palette()["text_dim"],
-                command=self._disable_project,
-            )
-            self.toggle_btn.pack(side="right")
         self.pause_btn = ctk.CTkButton(
             header,
             text=self._tr("ui.button.pause"),
             image=self._pause_icon,
             compound="left",
-            width=76,
-            height=28,
+            width=PROJECT_RUN_BUTTON_WIDTH,
+            height=PROJECT_RUN_BUTTON_HEIGHT,
             border_spacing=4,
-            corner_radius=6,
-            font=ui_font(size=11),
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=12),
             fg_color=current_palette()["muted_button"],
             hover_color=current_palette()["muted_hover"],
             text_color=current_palette()["text_dim"],
             state="disabled",
             command=self._pause_project,
         )
-        self.pause_btn.pack(side="right", padx=(0, 6))
+        self.pause_btn.pack(side="right")
         self.start_btn = ctk.CTkButton(
             header,
             text=self._tr("ui.button.start"),
             image=self._start_icon,
             compound="left",
-            width=76,
-            height=28,
+            width=PROJECT_RUN_BUTTON_WIDTH,
+            height=PROJECT_RUN_BUTTON_HEIGHT,
             border_spacing=4,
-            corner_radius=6,
-            font=ui_font(size=11),
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=12),
             fg_color=current_palette()["accent"],
             hover_color=current_palette()["accent_hover"],
             text_color=current_palette()["button_text"],
@@ -2034,9 +2044,6 @@ class ProjectPane(ctk.CTkFrame):
     def _project_title(self) -> str:
         return self._tr("ui.section.project", number=self.project_index + 1)
 
-    def _disable_project(self):
-        self.app._set_project_enabled(self.project_index, False)
-
     def _sync_manager(self):
         getter = getattr(self.app, "get_sync_manager", None)
         if callable(getter):
@@ -2049,6 +2056,38 @@ class ProjectPane(ctk.CTkFrame):
             after(0, callback)
         else:
             callback()
+
+    def prepare_start_check(self):
+        saver = getattr(self.config_panel, "_save_values_only", None)
+        if callable(saver):
+            try:
+                saver(emit_log=True)
+            except TypeError:
+                saver()
+        marker = getattr(self.config_panel, "mark_start_checking", None)
+        if callable(marker):
+            marker()
+        self.log_panel.append(LogEvent(LogIcon.START, self._tr("ui.start.checking"), "info"))
+
+    def apply_start_preflight_report(self, report: PreflightReport):
+        emitter = getattr(self.app, "_emit_preflight_report", None)
+        if callable(emitter):
+            emitter(report, dedupe_errors=False, project_index=self.project_index)
+        applier = getattr(self.config_panel, "apply_preflight_report", None)
+        if callable(applier):
+            applier(report)
+
+    def _apply_start_preflight_report_before_start(self, report: PreflightReport):
+        done = threading.Event()
+
+        def apply():
+            try:
+                self.apply_start_preflight_report(report)
+            finally:
+                done.set()
+
+        self._schedule_ui(apply)
+        done.wait(timeout=2.0)
 
     def _set_project_running_ui(self, running: bool):
         p = current_palette()
@@ -2067,6 +2106,10 @@ class ProjectPane(ctk.CTkFrame):
         )
         if self.toggle_btn is not None:
             self.toggle_btn.configure(state="disabled" if running else "normal")
+        if self.project_index == 1:
+            setter = getattr(self.app, "_set_secondary_project_action_enabled", None)
+            if callable(setter):
+                setter(not running)
 
     def _refresh_app_running_state(self):
         any_running = False
@@ -2105,17 +2148,11 @@ class ProjectPane(ctk.CTkFrame):
             update_tray()
 
     def _start_project(self):
-        report = self.save_and_check()
-        if not report.ok:
-            return
         sync = self._sync_manager()
         if sync is None:
             return
-        self._start_preflight_snapshot = (
-            sync.preflight_snapshot()
-            if hasattr(sync, "preflight_snapshot")
-            else None
-        )
+        self.prepare_start_check()
+        self._start_preflight_snapshot = None
         setter = getattr(self.app, "set_all_config_enabled", None)
         if callable(setter):
             setter(False)
@@ -2125,16 +2162,54 @@ class ProjectPane(ctk.CTkFrame):
     def _start_project_worker(self):
         started = False
         error = ""
+        report = None
         try:
+            collector = getattr(self.app, "_collect_preflight_report", None)
+            if callable(collector):
+                report = collector(project_index=self.project_index)
+                if not report.ok:
+                    self._schedule_ui(
+                        lambda report=report: self._finish_project_start_after_preflight(
+                            report,
+                            False,
+                            "",
+                        )
+                    )
+                    return
+                self._apply_start_preflight_report_before_start(report)
+                report = None
             sync = self._sync_manager()
             if sync is not None:
+                self._start_preflight_snapshot = (
+                    sync.preflight_snapshot()
+                    if hasattr(sync, "preflight_snapshot")
+                    else None
+                )
                 started = sync.start(
                     preflight_checked=True,
                     preflight_snapshot=getattr(self, "_start_preflight_snapshot", None),
                 )
         except Exception as e:
             error = str(e)
-        self._schedule_ui(lambda: self._finish_project_start(started, error))
+        self._schedule_ui(
+            lambda report=report, started=started, error=error:
+                self._finish_project_start_after_preflight(report, started, error)
+        )
+
+    def _finish_project_start_after_preflight(
+        self,
+        report: PreflightReport | None,
+        started: bool,
+        error: str = "",
+    ):
+        if report is not None:
+            self.apply_start_preflight_report(report)
+            if not report.ok:
+                self._start_preflight_snapshot = None
+                self._set_project_running_ui(False)
+                self._refresh_app_running_state()
+                return
+        self._finish_project_start(started, error)
 
     def _finish_project_start(self, started: bool, error: str = ""):
         if started:
@@ -2180,8 +2255,6 @@ class ProjectPane(ctk.CTkFrame):
         self.title_label.configure(text=self._project_title())
         self.start_btn.configure(text=self._tr("ui.button.start"))
         self.pause_btn.configure(text=self._tr("ui.button.pause"))
-        if self.toggle_btn is not None:
-            self.toggle_btn.configure(text=self._tr("ui.button.remove_project"))
         self.config_panel.refresh_language()
         self.log_panel.refresh_language()
 
@@ -2286,20 +2359,103 @@ class MultiControlPanel(_OriginalControlPanel):
                 LogEvent(LogIcon.WARNING, message, "warning"),
             )
 
+    def _prepare_project_start_check(self, project_index: int):
+        panel = self._project_panel(project_index)
+        preparer = getattr(panel, "prepare_start_check", None)
+        if callable(preparer):
+            preparer()
+            return
+        config_panel = getattr(panel, "config_panel", panel)
+        saver = getattr(config_panel, "_save_values_only", None)
+        if callable(saver):
+            try:
+                saver(emit_log=True)
+            except TypeError:
+                saver()
+        marker = getattr(config_panel, "mark_start_checking", None)
+        if callable(marker):
+            marker()
+
+    def _apply_project_preflight_report(
+        self,
+        project_index: int,
+        report: PreflightReport,
+    ):
+        panel = self._project_panel(project_index)
+        applier = getattr(panel, "apply_start_preflight_report", None)
+        if callable(applier):
+            applier(report)
+            return
+        emitter = getattr(self.app, "_emit_preflight_report", None)
+        if callable(emitter):
+            emitter(report, dedupe_errors=False, project_index=project_index)
+        config_panel = getattr(panel, "config_panel", panel)
+        config_applier = getattr(config_panel, "apply_preflight_report", None)
+        if callable(config_applier):
+            config_applier(report)
+
+    def _apply_project_preflight_report_before_start(
+        self,
+        project_index: int,
+        report: PreflightReport,
+    ):
+        done = threading.Event()
+
+        def apply():
+            try:
+                self._apply_project_preflight_report(project_index, report)
+            finally:
+                done.set()
+
+        try:
+            self.after(0, apply)
+        except tk.TclError:
+            apply()
+        done.wait(timeout=2.0)
+
     def _start(self):
         enabled_indexes = self._enabled_project_indexes()
-        snapshots = {}
-        passed_indexes = []
         # legacy single-project path: config_panel.set_config_enabled(False)
         for project_index in enabled_indexes:
-            panel = self._project_panel(project_index)
-            if not panel or not hasattr(panel, "save_and_check"):
-                continue
-            report = panel.save_and_check()
+            self._prepare_project_start_check(project_index)
+        self._start_preflight_snapshot = None
+        self._start_preflight_snapshots = {}
+        self._set_all_config_enabled(False)
+        self.start_btn.configure(state="disabled")
+        threading.Thread(target=self._start_worker, daemon=True).start()
+
+    def _start_worker(self):
+        collector = getattr(self.app, "_collect_preflight_report", None)
+        if (
+            not callable(collector)
+            and not getattr(self.app, "sync_managers", None)
+            and not hasattr(self.app, "config_panel")
+        ):
+            return super()._start_worker()
+        enabled_indexes = self._enabled_project_indexes()
+        reports: dict[int, PreflightReport] = {}
+        snapshots = {}
+        passed_indexes = []
+        for project_index in enabled_indexes:
+            try:
+                if callable(collector):
+                    report = collector(project_index=project_index)
+                else:
+                    panel = self._project_panel(project_index)
+                    report = panel.save_and_check()
+            except Exception as e:
+                report = PreflightReport(errors=[str(e)])
+            reports[project_index] = report
             if not report.ok:
-                self._log_start_all_blocked(passed_indexes, project_index)
-                self._start_preflight_snapshot = None
-                self._start_preflight_snapshots = {}
+                self.after(
+                    0,
+                    lambda reports=reports, passed_indexes=passed_indexes, project_index=project_index:
+                        self._finish_start_preflight_failed(
+                            reports,
+                            passed_indexes,
+                            project_index,
+                        )
+                )
                 return
             sync = self._sync_manager(project_index)
             if sync and hasattr(sync, "preflight_snapshot"):
@@ -2309,15 +2465,11 @@ class MultiControlPanel(_OriginalControlPanel):
                     self._start_preflight_snapshot = snapshot
             passed_indexes.append(project_index)
         self._start_preflight_snapshots = snapshots
-        self._set_all_config_enabled(False)
-        self.start_btn.configure(state="disabled")
-        threading.Thread(target=self._start_worker, daemon=True).start()
-
-    def _start_worker(self):
-        sync_managers = getattr(self.app, "sync_managers", None)
-        if not sync_managers:
-            return super()._start_worker()
-        enabled_indexes = self._enabled_project_indexes()
+        for project_index in enabled_indexes:
+            self._apply_project_preflight_report_before_start(
+                project_index,
+                reports[project_index],
+            )
         started_indexes = []
         errors = []
         started = True
@@ -2345,9 +2497,30 @@ class MultiControlPanel(_OriginalControlPanel):
                         sync.stop()
                 except Exception:
                     pass
-        self.after(0, lambda: self._finish_start(started, "; ".join(errors)))
+        self.after(0, lambda started=started, errors=errors: self._finish_start(started, "; ".join(errors)))
 
-    def _finish_start(self, started: bool, error: str = ""):
+    def _finish_start_preflight_failed(
+        self,
+        reports: dict[int, PreflightReport],
+        passed_indexes: list[int],
+        failed_project_index: int,
+    ):
+        for project_index, report in reports.items():
+            self._apply_project_preflight_report(project_index, report)
+        self._log_start_all_blocked(passed_indexes, failed_project_index)
+        self._start_preflight_snapshot = None
+        self._start_preflight_snapshots = {}
+        self._set_stopped()
+
+    def _finish_start(
+        self,
+        started: bool,
+        error: str = "",
+        reports: dict[int, PreflightReport] | None = None,
+    ):
+        if reports:
+            for project_index, report in reports.items():
+                self._apply_project_preflight_report(project_index, report)
         if started:
             self._set_running()
             return
@@ -2619,6 +2792,39 @@ class App:
         for panel in getattr(self, "project_panels", {}).values():
             panel.set_config_enabled(enabled)
 
+    def _pack_project_action_button(self, button):
+        if button is None:
+            return
+        pack = getattr(button, "pack", None)
+        if callable(pack):
+            pack(side="right")
+
+    def _hide_project_action_button(self, button):
+        if button is None:
+            return
+        pack_forget = getattr(button, "pack_forget", None)
+        if callable(pack_forget):
+            pack_forget()
+
+    def _show_secondary_project_action(self, project_2_enabled: bool):
+        add_button = getattr(self, "add_project_btn", None)
+        remove_button = getattr(self, "remove_project_btn", None)
+        self._hide_project_action_button(add_button)
+        self._hide_project_action_button(remove_button)
+        if project_2_enabled:
+            self._pack_project_action_button(remove_button)
+        else:
+            self._pack_project_action_button(add_button)
+
+    def _set_secondary_project_action_enabled(self, enabled: bool):
+        state = "normal" if enabled else "disabled"
+        for button in (
+            getattr(self, "add_project_btn", None),
+            getattr(self, "remove_project_btn", None),
+        ):
+            if button is not None:
+                button.configure(state=state)
+
     def _has_secondary_project_enabled(self) -> bool:
         projects = getattr(self.cm.config, "projects", [])
         return any(
@@ -2695,11 +2901,8 @@ class App:
                     except Exception:
                         pass
                 panel.hide()
-        add_button = getattr(self, "add_project_btn", None)
-        if add_button is not None and project_index == 1:
-            add_button.pack_forget()
-            if not enabled:
-                add_button.pack(side="right")
+        if project_index == 1:
+            self._show_secondary_project_action(enabled)
         self._apply_project_layout_mode()
         if save:
             self.cm.save()
@@ -2736,7 +2939,7 @@ class App:
             values=["中", "EN"],
             width=74,
             height=24,
-            corner_radius=6,
+            corner_radius=CONTROL_CORNER_RADIUS,
             font=ui_font(size=11),
             fg_color=p["muted_button"],
             selected_color=p["accent"],
@@ -2796,9 +2999,9 @@ class App:
         self.add_project_btn = ctk.CTkButton(
             self.project_action_row,
             text=self.tr("ui.button.add_project"),
-            width=132,
-            height=32,
-            corner_radius=6,
+            width=SAVE_CHECK_BUTTON_WIDTH,
+            height=CONFIG_ACTION_BUTTON_HEIGHT,
+            corner_radius=CONTROL_CORNER_RADIUS,
             font=ui_font(size=12),
             fg_color=p["muted_button"],
             hover_color=p["muted_hover"],
@@ -2806,6 +3009,18 @@ class App:
             command=lambda: self._set_project_enabled(1, True),
         )
         self.add_project_btn.pack(side="right")
+        self.remove_project_btn = ctk.CTkButton(
+            self.project_action_row,
+            text=self.tr("ui.button.remove_project"),
+            width=SAVE_CHECK_BUTTON_WIDTH,
+            height=CONFIG_ACTION_BUTTON_HEIGHT,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=12),
+            fg_color=p["muted_button"],
+            hover_color=p["muted_hover"],
+            text_color=p["text"],
+            command=lambda: self._set_project_enabled(1, False),
+        )
 
         self.project_panels_frame = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
         self.project_panels_frame.pack(
@@ -2894,6 +3109,9 @@ class App:
         add_project_btn = getattr(self, "add_project_btn", None)
         if add_project_btn is not None:
             add_project_btn.configure(text=self.tr("ui.button.add_project"))
+        remove_project_btn = getattr(self, "remove_project_btn", None)
+        if remove_project_btn is not None:
+            remove_project_btn.configure(text=self.tr("ui.button.remove_project"))
         for panel in getattr(self, "project_panels", {}).values():
             panel.refresh_language()
         self.status_bar.refresh_language()
@@ -2957,9 +3175,13 @@ class App:
         shared_vm_panel = getattr(self, "shared_vm_panel", None)
         if shared_vm_panel is not None:
             shared_vm_panel.refresh_theme()
-        add_project_btn = getattr(self, "add_project_btn", None)
-        if add_project_btn is not None:
-            add_project_btn.configure(
+        for action_button in (
+            getattr(self, "add_project_btn", None),
+            getattr(self, "remove_project_btn", None),
+        ):
+            if action_button is None:
+                continue
+            action_button.configure(
                 fg_color=p["muted_button"],
                 hover_color=p["muted_hover"],
                 text_color=p["text"],
@@ -3015,19 +3237,22 @@ class App:
         self._tray_thread.start()
 
     def _build_tray_menu(self):
-        return pystray.Menu(
+        return TrayActivationMenu(
+            self._tray_show,
             pystray.MenuItem(
                 self._tray_status_label,
                 None,
                 enabled=False,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(self._tray_show_label, self._tray_show, default=True),
-            pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 self._tray_sync_label,
                 self._tray_toggle_sync,
-                checked=self._tray_sync_checked,
+                default=True,
+            ),
+            pystray.MenuItem(
+                self._tray_show_label,
+                self._tray_show,
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(self._tray_quit_label, self._tray_quit),
@@ -3345,9 +3570,9 @@ class App:
                     if event_type == "log" and log_panel is not None:
                         log_panel.append(data)
                     elif event_type == "bin_ready":
-                        self._on_bin_ready(data)
+                        self._on_bin_ready(data, index)
                     elif event_type == "bin_unchanged":
-                        self._on_bin_unchanged(data)
+                        self._on_bin_unchanged(data, index)
                     elif event_type == "full_sync_progress" and log_panel is not None:
                         log_panel.update_progress(data)
                     elif event_type == "info" and data == "sync_stopped":
@@ -3364,18 +3589,31 @@ class App:
 
         self._schedule_after(200, self._poll_events)
 
-    def _on_bin_ready(self, filename: str):
-        if self._tray_icon:
-            try:
-                self._tray_icon.notify(app_tr(self, "tray.notify.bin_ready", filename=filename), "VM Sync")
-            except Exception:
-                pass
-
-    def _on_bin_unchanged(self, filename: str):
+    def _on_bin_ready(self, filename: str, project_index: int = 0):
         if self._tray_icon:
             try:
                 self._tray_icon.notify(
-                    app_tr(self, "tray.notify.bin_unchanged", filename=filename),
+                    app_tr(
+                        self,
+                        "tray.notify.bin_ready",
+                        filename=filename,
+                        project_number=project_index + 1,
+                    ),
+                    "VM Sync",
+                )
+            except Exception:
+                pass
+
+    def _on_bin_unchanged(self, filename: str, project_index: int = 0):
+        if self._tray_icon:
+            try:
+                self._tray_icon.notify(
+                    app_tr(
+                        self,
+                        "tray.notify.bin_unchanged",
+                        filename=filename,
+                        project_number=project_index + 1,
+                    ),
                     "VM Sync",
                 )
             except Exception:
@@ -3398,6 +3636,23 @@ class App:
         dedupe_errors: bool = True,
         project_index: int | None = None,
     ) -> PreflightReport:
+        # Deduplication state (_last_preflight_error) is handled when emitting the report.
+        report = self._collect_preflight_report(
+            for_full_sync=for_full_sync,
+            project_index=project_index,
+        )
+        return self._emit_preflight_report(
+            report,
+            show_dialog=show_dialog,
+            dedupe_errors=dedupe_errors,
+            project_index=project_index,
+        )
+
+    def _collect_preflight_report(
+        self,
+        for_full_sync: bool = False,
+        project_index: int | None = None,
+    ) -> PreflightReport:
         checker = PreflightChecker(self.cm.config)
         try:
             report = checker.check(
@@ -3414,12 +3669,24 @@ class App:
             elif bin_report.level == "warning" and bin_report.message:
                 report.warnings.append(bin_report.message)
 
+        return report
+
+    def _preflight_log_panel(self, project_index: int | None = None):
         log_panel = self.log_panel
         if project_index is not None:
             project_panel = getattr(self, "project_panels", {}).get(project_index)
             if project_panel is not None:
                 log_panel = project_panel.log_panel
+        return log_panel
 
+    def _emit_preflight_report(
+        self,
+        report: PreflightReport,
+        show_dialog: bool = False,
+        dedupe_errors: bool = True,
+        project_index: int | None = None,
+    ) -> PreflightReport:
+        log_panel = self._preflight_log_panel(project_index)
         if not report.ok:
             now = time.time()
             is_repeat = (

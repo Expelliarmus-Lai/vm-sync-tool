@@ -25,10 +25,13 @@ class Completed:
 class SyncManagerTests(unittest.TestCase):
     def test_syncer_log_emit_calls_use_emoji_icons(self):
         source = inspect.getsource(syncer.SyncManager)
-        legacy_icons = ('"⏹"', '"✕"', '"✗"', '"✓"', '"ℹ"', '"↗"', '"▶"')
+        legacy_icons = ('"⏹"', '"✕"', '"✗"', '"✓"', '"ℹ"', '"ℹ️"', '"↗"', '"▶"')
 
         for icon in legacy_icons:
             self.assertNotIn(icon, source)
+
+    def test_info_log_icon_uses_color_emoji(self):
+        self.assertEqual("💡", syncer.LogIcon.INFO)
 
     def test_firmware_ready_log_uses_fire_icon(self):
         self.assertEqual("🔥", syncer.LogIcon.FIRMWARE)
@@ -866,6 +869,30 @@ class SyncManagerTests(unittest.TestCase):
 
         self.assertFalse(started)
         self.assertFalse(manager.running)
+
+    def test_start_logs_host_baseline_before_hashing_files(self):
+        manager, _cm = self._manager()
+        logs_seen_before_prime = []
+
+        def fake_prime():
+            while not manager.event_queue.empty():
+                event_type, data = manager.event_queue.get_nowait()
+                if event_type == "log":
+                    logs_seen_before_prime.append(data)
+
+        with patch.object(manager, "_can_start", return_value=True), \
+                patch.object(manager, "_prime_host_file_signatures", side_effect=fake_prime), \
+                patch.object(manager, "_start_copy_worker"), \
+                patch.object(manager, "_start_observer"), \
+                patch.object(manager, "_start_poller"):
+            self.assertTrue(manager.start())
+
+        self.assertTrue(any("文件基线" in event.message for event in logs_seen_before_prime))
+        baseline_events = [
+            event for event in logs_seen_before_prime
+            if "文件基线" in event.message
+        ]
+        self.assertEqual(syncer.LogIcon.CHECK, baseline_events[0].icon)
 
     def test_start_does_not_prime_bin_baseline_before_reporting_running(self):
         manager, cm = self._manager()
