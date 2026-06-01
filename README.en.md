@@ -32,7 +32,7 @@ Typical workflow:
 - `.bin` timestamp-only updates with unchanged content are skipped and reported through a tray notification.
 - During full sync, configuration fields and Start are disabled, the full-sync button changes to Cancel Full Sync, and cancellation waits for the current VM operation before cleanup.
 - Supports Chinese/English UI switching. First launch prefers the Windows display/UI language, and manual changes are remembered.
-- Supports system tray operation, so the sync service can continue after the window is hidden. The tray menu follows the selected language and reports running, partially running, or partially degraded state.
+- Supports system tray operation, so the sync service can continue after the window is hidden. Single-clicking or double-clicking the tray icon only restores the window; the right-click menu can start/pause sync, show the window, or exit, and follows the selected language while reporting running, partially running, or partially degraded state.
 - Stops sync threads and cleans temporary VM state files when the application exits.
 
 ## Requirements
@@ -71,7 +71,7 @@ Developers should use the source repository and refer to the sections below: [De
 - **Full sync**: Uploads every file under the host project root, extracts the archive into a VM temporary directory, then copies the extracted files into the VM project path. VM files with the same relative paths are overwritten; extra files that already exist in the VM are not deleted. Full sync can be cancelled; cancellation runs after the current VM operation and attempts to clean the temporary zip and extraction directory.
 - **Incremental sync**: Clicking Start first saves the configuration and runs the same preflight as "Save and Check"; the service starts only after those checks pass. After the sync service starts, newly created or modified host files are watched and only extensions configured in `watch_extensions` are processed. A file is uploaded only when its on-disk content hash changes; editor probes, timestamp-only updates, and unsaved VS Code edits are ignored. Each file is copied to a temporary file in the VM destination directory before it is moved over the final path; deletes, renames, and files outside the extension list are not automatically synced.
 - **`.bin` return**: Pulls back only the configured VM `.bin` target. The `.bin` path is ultimately saved relative to the VM project path; if you paste an absolute path under the VM project path, the UI converts it to a relative path and displays Windows backslashes consistently. When the sync service starts, the current VM `.bin` is recorded as a baseline and is not copied back immediately. Later content changes overwrite the same-named file in the host firmware output directory. Files whose timestamp changes but content stays the same are skipped and reported through a tray notification. After sync is stopped, late `.bin` poll results no longer emit logs, notifications, or overwrites.
-- **Dual-project watching**: Enable Project 2 with "Add Project Sync". Both projects share the VMX, VM username, and VM password, but project paths, full sync, incremental uploads, `.bin` return, pause/cancel state, and logs are isolated. If enabled projects have overlapping host or VM paths, preflight blocks startup to prevent mixed transfers.
+- **Dual-project watching**: Enable Project 2 with "Add Sync Project". Both projects share the VMX, VM username, and VM password, but project paths, full sync, incremental uploads, `.bin` return, pause/cancel state, and logs are isolated. If enabled projects have overlapping host or VM paths, preflight blocks startup to prevent mixed transfers.
 - **Start timing**: Sync the project into the VM first, click Start, then build in Keil. A `.bin` that already exists before Start is treated as the baseline; the first post-baseline timestamp update is copied back once even if the content is unchanged.
 
 For detailed user instructions, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
@@ -141,7 +141,7 @@ python -m unittest discover -v
 Compile-check the main modules and higher-risk tests:
 
 ```powershell
-python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py tests/test_ui_tray.py tests/test_main_single_instance.py
+python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_ui_multi_project.py tests/test_vmrun_resolver.py
 ```
 
 ## Packaging

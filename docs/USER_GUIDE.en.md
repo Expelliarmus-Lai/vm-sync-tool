@@ -41,7 +41,7 @@ A compact `中 / EN` language switch is available in the upper-right of the wind
 
 ## Single-Project and Dual-Project Modes
 
-By default, only Project 1 is shown, and the window keeps the same width as the older single-project UI. To watch a second codebase at the same time, click "Add Project Sync"; the window expands to the right with Project 2's configuration and log pane. Clicking "Disable Project 2" pauses Project 2 and returns the window to the single-project layout.
+By default, only Project 1 is shown, and the window keeps the same width as the older single-project UI. The default window size is `700x955`, which normally shows the whole single-project layout without page scrolling. To watch a second codebase at the same time, click "Add Sync Project"; the window expands to the right with Project 2's configuration and log pane and switches to the `1180x955` dual-project layout. Clicking "Disable Project 2" pauses Project 2 and returns the window to the single-project layout.
 
 Project 1 and Project 2 share the same VMX, VM username, and VM password. Each project has its own host project path, VM project path, `.bin` relative path, firmware return directory, Start/Pause controls, Save and Check, Full Sync/Cancel, and log pane. Legacy single-project configs are automatically filled into Project 1, and Project 2 starts disabled.
 
@@ -95,7 +95,7 @@ If you paste a full absolute path that is under the VM project path, the applica
 3. Fill in the configuration fields.
 4. Click "保存并检测" (Save and Check).
 5. When setting up a project for the first time, click "全量同步" (Full Sync) to copy the whole project into the VM.
-6. If you need a second codebase, click "Add Project Sync", fill in Project 2's paths, and run Save and Check for Project 2.
+6. If you need a second codebase, click "Add Sync Project", fill in Project 2's paths, and run Save and Check for Project 2.
 7. Click the top Start button to start all enabled projects, or click Start inside one project pane to start only that project. The application first saves the configuration and runs the same checks as Save and Check. After the checks pass, it begins watching host file changes and VM `.bin` output.
 8. After the corresponding project log records the current `.bin` state, build that project manually with Keil inside the VM.
 9. After the `.bin` content changes, the application automatically copies it back to that project's firmware return directory.
@@ -125,6 +125,12 @@ Incremental sync only handles files that are created or modified under that proj
 
 `.bin` return targets only the `.bin` file configured for that project. When sync starts, the application records the existing VM `.bin` as a baseline and does not immediately pull it back to overwrite an old host file. After startup, the `.bin` is copied back when its content changes. After the first baseline record, one timestamp-only update with unchanged content is also copied back once; later timestamp-only updates are skipped and reported through a tray notification, similar to the firmware-ready notification. After one project is stopped, late `.bin` poll results no longer emit that project's logs, notifications, or overwrites, and they do not affect the other project.
 
+## System Tray
+
+Closing the main window only hides it to the system tray; sync keeps running. Single-clicking or double-clicking the tray icon only restores the main window and does not start or pause sync.
+
+Right-click the tray icon to open the menu. The menu shows the current state and provides Start/Pause Sync, Show Window, and Exit. Start/Pause Sync is the primary menu action and is shown in bold; Show Window is not bold. To fully exit the application, use Exit from the tray right-click menu.
+
 ## FAQ
 
 ### The application reports that vmrun.exe cannot be found
@@ -149,7 +155,7 @@ This is expected. Start sync before building in Keil; a `.bin` that already exis
 
 ### The application still runs after closing the window
 
-Closing the window only hides the application to the system tray. Sync continues running. To fully exit, right-click the tray icon and choose "退出" (Exit).
+Closing the window only hides the application to the system tray. Sync continues running. Single-click or double-click the tray icon to show the window again; to fully exit, right-click the tray icon and choose "退出" (Exit).
 
 ## Source Code and Further Development
 

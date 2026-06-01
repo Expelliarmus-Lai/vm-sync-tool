@@ -17,7 +17,7 @@ The intended workflow is:
 - VMX preflight verifies that the configured VMX is the VM currently listed by `vmrun list`.
 - Configuration is now shared VM settings plus a `projects` list. VMX, VM username, and VM password are shared; each project owns `enabled`, Host project path, VM project path, `.bin` relative path, and Host return directory.
 - Legacy single-project configs are migrated into project 1 automatically. When legacy project fields and `projects` coexist, `projects` wins, and saves write the new structure.
-- The UI supports up to two project panes in this release. Project 2 is enabled with `添加项目同步`; disabling project 2 hides its pane and shrinks the window back to the single-project layout.
+- The UI supports up to two project panes in this release. Project 2 is enabled with `添加同步项目`; disabling project 2 hides its pane and shrinks the window back to the single-project layout.
 - Project 1 and project 2 have independent start/pause, save/check, full sync/cancel, logs, `.bin` hints, watchdog state, upload queues, hash baselines, `.bin` baselines, and return directories.
 - The top start button is atomic across enabled projects: if any enabled project fails preflight, no project starts, and projects that passed log that they are waiting for the failing project to be fixed.
 - Host-to-VM incremental sync is implemented with watchdog and a 500 ms debounce.
@@ -37,8 +37,8 @@ The intended workflow is:
 - Stop requests suppress late `.bin` poller logs, skip notifications, and guest-to-host copies after the service has been stopped.
 - Stale run-token checks suppress late incremental moves, `.bin` host overwrites, `.bin` logs/notifications, and stale readiness state after a project is paused or restarted.
 - Incremental upload timeout suspends only the affected project's incremental queue and surfaces `部分异常` / `Partially degraded` in the top status when applicable.
-- The UI currently starts at `760x860`, has minimum size `680x720`, widens to the dual-project layout when project 2 is enabled, and has no maximum-size cap.
-- The tray menu is bilingual/dynamic: status, show, start/pause, and quit labels update after language switching and can show running, partially running, or partially degraded state.
+- The UI currently starts at `700x955`, has minimum size `640x720`, widens to `1180x955` with minimum size `1040x740` when project 2 is enabled, and has no maximum-size cap.
+- The tray menu is bilingual/dynamic: status, show, start/pause, and quit labels update after language switching and can show running, partially running, or partially degraded state. The start/pause menu item is bold/default in the menu, while tray icon activation itself restores the window instead of toggling sync.
 - The source repository has bilingual project documentation: Chinese `README.md` and English `README.en.md`.
 - The release user guide is also bilingual: `docs/USER_GUIDE.md` and `docs/USER_GUIDE.en.md`.
 - `build_release.ps1` builds a folder-based exe release, copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewrites language links for the release package, and creates `dist\VM-Sync-v1.2.0.zip`.
@@ -328,7 +328,7 @@ Title bar: status dot, "VM SYNC", compact `中 / EN` language switch, state text
 Control panel: start/pause, full sync, counters/status
 AutoScrollFrame: auto-hiding page scrollbar
   - Shared VM config panel: VMX, VM username, VM password
-  - Add Project Sync button when project 2 is disabled
+  - `添加同步项目` / Add Sync Project button when project 2 is disabled
   - Project 1 pane: project config, per-project start/pause, save/check, full sync/cancel, log
   - Project 2 pane: same controls and log, shown only when enabled
 Status bar: VM status, vmrun status, poll interval
@@ -347,8 +347,8 @@ UI notes:
 ## Window and Tray Lifecycle
 
 - Close button hides the window with `withdraw()`; sync keeps running.
-- Tray left-click or `显示窗口` restores the window.
-- Tray menu dynamically shows current state, start/pause state, show-window, and quit labels in the current language. Status can show running, partially running, or partially degraded.
+- Tray left-click/double-click or `显示窗口` restores the window. Tray icon activation must not toggle sync.
+- Tray menu dynamically shows current state, start/pause state, show-window, and quit labels in the current language. Status can show running, partially running, or partially degraded. Start/pause is the bold/default menu item; show-window is not bold.
 - Tray `退出` stops sync, deletes the guest state sidecar if present, removes the tray icon, and quits the process.
 - The tray icon appears on startup and persists until `退出`.
 

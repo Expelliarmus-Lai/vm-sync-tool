@@ -34,7 +34,7 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在宿主机和 VMware Works
 - `.bin` 时间戳变化但内容未变化时会跳过覆盖，并通过托盘通知提示。
 - 全量同步期间配置栏和启动按钮会置灰，全量同步按钮会切换为“取消全量同步”，取消会等待当前 VM 操作安全收尾并清理临时文件。
 - 支持中英文界面切换，首次启动优先读取 Windows 显示/UI 语言，手动切换后会记住选择。
-- 支持系统托盘运行，窗口隐藏后同步服务可继续工作；托盘右键菜单随中英文切换，并显示运行、部分运行或部分异常状态。
+- 支持系统托盘运行，窗口隐藏后同步服务可继续工作；单击或双击托盘图标只会显示窗口，右键菜单可启动/暂停同步、显示窗口或退出，并随中英文切换显示运行、部分运行或部分异常状态。
 - 退出程序时停止同步线程并清理临时 VM 状态文件。
 
 ## 运行要求
@@ -73,7 +73,7 @@ VM Sync/
 - **全量同步**：上传宿主机工程根目录下的全部文件，先解压到 VM 临时目录，再覆盖到 VM 工程路径。VM 中相同相对路径的文件会被覆盖；VM 中额外存在的文件不会被删除。全量同步可取消，取消会在当前 VM 操作完成后清理临时 zip 和临时解压目录。
 - **增量同步**：点击“启动”会先保存配置并执行与“保存并检测”相同的预检；通过后才启动同步服务。同步服务启动后，监听宿主机新增或修改的文件，仅处理 `watch_extensions` 中配置的扩展名。只有磁盘文件内容 hash 变化时才会上传；编辑器探测、时间戳变化或未保存的 VS Code 修改不会触发上传。文件会先复制到 VM 目标目录的临时文件，再移动覆盖最终路径；删除、重命名和不在扩展名列表内的文件不会自动同步。
 - **`.bin` 回传**：只拉取配置的 VM `.bin` 目标。`.bin` 路径最终按相对于 VM 工程路径的相对路径保存；如果粘贴的是 VM 工程路径下面的绝对路径，界面会自动转换成相对路径并统一显示 Windows 反斜杠。同步服务启动时会先记录 VM 当前 `.bin` 作为基线，不会立即回传；后续内容变化才会覆盖宿主机固件回传目录中的同名文件。仅时间戳变化且内容相同的文件会被跳过并显示托盘通知。停止同步后，迟到的 `.bin` 轮询结果不会再触发日志、通知或覆盖。
-- **双项目监听**：项目 2 通过“添加项目同步”启用。两个项目共用 VMX、VM 用户名和 VM 密码，但项目路径、全量同步、增量上传、`.bin` 回传、暂停/取消和日志互相独立。若两个启用项目的 Host 路径或 VM 路径互相包含，预检会阻止启动，避免传输混淆。
+- **双项目监听**：项目 2 通过“添加同步项目”启用。两个项目共用 VMX、VM 用户名和 VM 密码，但项目路径、全量同步、增量上传、`.bin` 回传、暂停/取消和日志互相独立。若两个启用项目的 Host 路径或 VM 路径互相包含，预检会阻止启动，避免传输混淆。
 - **启动时机**：建议先把工程同步到 VM，再点击“启动”，然后去 Keil 编译。启动前已经存在的 `.bin` 会作为基线；首次基线后的第一次时间更新即使内容相同也会回传一次。
 
 更详细的用户操作说明见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)。
@@ -143,7 +143,7 @@ python -m unittest discover -v
 编译检查主要模块和高风险测试：
 
 ```powershell
-python -m py_compile main.py config_manager.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_syncer.py tests/test_ui_full_sync.py tests/test_ui_tray.py tests/test_main_single_instance.py
+python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_ui_multi_project.py tests/test_vmrun_resolver.py
 ```
 
 ## 打包
