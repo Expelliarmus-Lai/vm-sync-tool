@@ -50,7 +50,7 @@ This tool does not install VMware Workstation, VMware Tools, or Keil, and it doe
 
 ## Usage Entry Points
 
-Regular users should download the release package: [VM-Sync-v1.2.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.2.0/VM-Sync-v1.2.0.zip).
+Regular users should download the release package: [VM-Sync-v1.2.1.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.2.1/VM-Sync-v1.2.1.zip).
 
 You can also open [GitHub Releases](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/latest) for the latest version. The release package should look like this:
 
@@ -164,10 +164,10 @@ The build output is generated at:
 
 ```text
 dist\VM Sync\
-dist\VM-Sync-v1.2.0.zip
+dist\VM-Sync-v1.2.1.zip
 ```
 
-Distribute `VM-Sync-v1.2.0.zip`, or distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, because the executable depends on the adjacent `_internal` directory.
+Distribute `VM-Sync-v1.2.1.zip`, or distribute the entire `VM Sync` folder. Do not distribute only `VM Sync.exe`, because the executable depends on the adjacent `_internal` directory.
 
 ## Repository Maintenance
 

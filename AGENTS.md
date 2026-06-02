@@ -44,7 +44,7 @@ The intended workflow is:
 - The tray menu is bilingual/dynamic: status, show, start/pause, and quit labels update after language switching and can show running, partially running, or partially degraded state. The start/pause menu item is bold/default in the menu, while tray icon activation itself restores the window instead of toggling sync.
 - The source repository has bilingual project documentation: Chinese `README.md` and English `README.en.md`.
 - The release user guide is also bilingual: `docs/USER_GUIDE.md` and `docs/USER_GUIDE.en.md`.
-- `build_release.ps1` builds a folder-based exe release, copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewrites language links for the release package, and creates `dist\VM-Sync-v1.2.0.zip`.
+- `build_release.ps1` builds a folder-based exe release, copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewrites language links for the release package, and creates `dist\VM-Sync-v1.2.1.zip`.
 - Local runtime config, release output, build output, caches, and probe logs are intentionally ignored by git.
 - Known open issue: window dragging can still feel less responsive than a normal native window on some machines. Do not pause timers, log updates, or polling while dragging, because that makes the app feel frozen.
 
@@ -95,7 +95,7 @@ vm-sync-tool/
   VM Sync.spec                                   tracked, PyInstaller spec
   build/                                         ignored, PyInstaller intermediate output
   dist/
-    VM-Sync-v1.2.0.zip                          ignored, generated release archive
+    VM-Sync-v1.2.1.zip                          ignored, generated release archive
     VM Sync/                                     ignored, generated folder-based release
       VM Sync.exe                                ignored, generated executable
       _internal/                                 ignored, bundled runtime/dependencies
@@ -246,7 +246,7 @@ Keil build in virtual machine
 - Release package layout after `build_release.ps1`:
 
 ```text
-dist\VM-Sync-v1.2.0.zip
+dist\VM-Sync-v1.2.1.zip
 dist\VM Sync\
   VM Sync.exe
   _internal\
@@ -258,7 +258,7 @@ dist\VM Sync\
 
 - `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md`, `docs/USER_GUIDE.en.md` to release `README.en.md`, and `LICENSE` to the release folder.
 - The build script rewrites guide language links from `USER_GUIDE*.md` to `README*.md` so links work inside the release package.
-- The build script also regenerates `dist\VM-Sync-v1.2.0.zip` and prints its SHA256.
+- The build script also regenerates `dist\VM-Sync-v1.2.1.zip` and prints its SHA256.
 - Do not commit `dist/`, `build/`, `config.json`, `__pycache__/`, or `vmrun_probe_result.txt`.
 - `config.example.json` stays tracked because it is safe to share and documents the public config shape.
 

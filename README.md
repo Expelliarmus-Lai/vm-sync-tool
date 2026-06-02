@@ -52,7 +52,7 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在本机电脑和 VMware Wo
 
 ## 使用入口
 
-普通使用者请下载发行包：[VM-Sync-v1.2.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.2.0/VM-Sync-v1.2.0.zip)。
+普通使用者请下载发行包：[VM-Sync-v1.2.1.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.2.1/VM-Sync-v1.2.1.zip)。
 
 也可以打开 [GitHub Releases](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/latest) 查看最新版本。发行包结构如下：
 
@@ -166,10 +166,10 @@ powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 
 ```text
 dist\VM Sync\
-dist\VM-Sync-v1.2.0.zip
+dist\VM-Sync-v1.2.1.zip
 ```
 
-发布时应分发 `VM-Sync-v1.2.0.zip`，或分发整个 `VM Sync` 文件夹；不能只分发单独的 `VM Sync.exe`，因为 exe 依赖旁边的 `_internal` 目录。
+发布时应分发 `VM-Sync-v1.2.1.zip`，或分发整个 `VM Sync` 文件夹；不能只分发单独的 `VM Sync.exe`，因为 exe 依赖旁边的 `_internal` 目录。
 
 ## 仓库维护
 
