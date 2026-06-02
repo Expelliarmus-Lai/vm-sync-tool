@@ -56,6 +56,7 @@ def list_running_vms(vmrun_path: str, timeout: int = 5) -> RunningVmsResult:
             capture_output=True,
             text=True,
             timeout=timeout,
+            errors="replace",
             creationflags=_CREATE_FLAGS,
         )
     except subprocess.TimeoutExpired:

@@ -60,6 +60,9 @@ class PreflightCheckerTests(unittest.TestCase):
             (host_root / "main.c").touch()
             (host_root / "RL6492_Project.uvprojx").touch()
             (host_root / "readme.md").touch()
+            (host_root / "Output" / "RL6492").mkdir(parents=True)
+            (host_root / "Output" / "RL6492" / "RL6492_Project.bin").touch()
+            (host_root / "Output" / "build.log").touch()
             (host_root / "out").mkdir()
 
             cfg = self._config(host_root, tmp)
@@ -292,7 +295,7 @@ class PreflightCheckerTests(unittest.TestCase):
             report = PreflightChecker(cfg, lambda _, **kw: RunningVmsResult(True, [cfg.vmx_path], "")).check()
 
         self.assertFalse(report.ok)
-        self.assertIn("Configure the VM password first", report.error_text)
+        self.assertIn("Configure the virtual machine password first", report.error_text)
         self.assertIn("Will watch", report.summary)
         self.assertIn("Project files: RL6492_Project.uvprojx", report.summary)
 
@@ -321,7 +324,7 @@ class PreflightCheckerTests(unittest.TestCase):
             report = PreflightChecker(cfg, lambda _, **kw: RunningVmsResult(True, [cfg.vmx_path], "")).check()
 
             self.assertFalse(report.ok)
-            self.assertTrue(any("overlapping host_project_paths" in err for err in report.errors))
+            self.assertTrue(any("本机工程路径存在重叠" in err for err in report.errors))
 
             cfg.projects[1].host_project_path = str(root / "p2")
             (root / "p2").mkdir(parents=True, exist_ok=True)
@@ -329,7 +332,7 @@ class PreflightCheckerTests(unittest.TestCase):
 
             report = PreflightChecker(cfg, lambda _, **kw: RunningVmsResult(True, [cfg.vmx_path], "")).check()
             self.assertFalse(report.ok)
-            self.assertTrue(any("overlapping vm_project_paths" in err for err in report.errors))
+            self.assertTrue(any("虚拟机工程路径存在重叠" in err for err in report.errors))
 
     def test_rejects_project_overlap_during_single_project_preflight(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,7 +361,7 @@ class PreflightCheckerTests(unittest.TestCase):
             ).check(project_index=1)
 
             self.assertFalse(report.ok)
-            self.assertTrue(any("overlapping host_project_paths" in err for err in report.errors))
+            self.assertTrue(any("本机工程路径存在重叠" in err for err in report.errors))
 
 if __name__ == "__main__":
     unittest.main()

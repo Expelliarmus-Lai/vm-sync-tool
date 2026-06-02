@@ -1,4 +1,6 @@
-"""Core sync engine: watchdog + vmrun for Host<->VM file sync."""
+"""Core sync engine: watchdog + vmrun for local PC / virtual machine sync."""
+
+from __future__ import annotations
 
 import os
 import hashlib
@@ -21,10 +23,10 @@ from preflight import PreflightChecker
 
 # Prevent CMD windows from popping up on Windows subprocess calls
 _CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-GUEST_CMD = r"C:\Windows\System32\cmd.exe"
 GUEST_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 POST_COPY_TIMESTAMP_DRIFT_SUPPRESS_SEC = 10.0
 VMRUN_CALL_LOCK = threading.Lock()
+FULL_SYNC_VM_PHASE_LOCK = threading.Lock()
 
 
 class LogIcon:
@@ -103,7 +105,7 @@ class Debouncer:
 
 
 class ProjectFileHandler(FileSystemEventHandler):
-    """Watchdog handler: on any file change, debounce and push to VM."""
+    """Watchdog handler: debounce local file changes before upload."""
 
     def __init__(self, sync_manager: "SyncManager"):
         self.sync = sync_manager
@@ -125,7 +127,7 @@ class ProjectFileHandler(FileSystemEventHandler):
 
 
 class SyncManager:
-    """Manages the lifecycle of file sync between Host and VM."""
+    """Manages the lifecycle of one project's sync service."""
 
     def __init__(self, config_manager, project_index: int = 0):
         self.config_manager = config_manager
@@ -141,6 +143,8 @@ class SyncManager:
         self._copy_lock = threading.Lock()
         self._host_signature_lock = threading.Lock()
         self._host_file_signatures: dict[str, tuple[int, str]] = {}
+        self._queued_host_file_signatures: dict[str, tuple[int, str]] = {}
+        self._startup_window_candidate_paths: list[str] = []
         self._running = False
         self._last_bin_mtime = 0
         self._last_bin_signature: tuple[int, str] | None = None
@@ -166,9 +170,16 @@ class SyncManager:
         self._synced_count = 0
         self._bin_ready = False
         self._run_token = 0
+        self._startup_watch_window_started_ns: int | None = None
+        self._translator: Translator | None = None
+        self._translator_language: str | None = None
 
     def _tr(self, key: str, **kwargs) -> str:
-        return Translator(self.config.config.language).tr(key, **kwargs)
+        language = self.config.config.language
+        if self._translator is None or self._translator_language != language:
+            self._translator = Translator(language)
+            self._translator_language = language
+        return self._translator.tr(key, **kwargs)
 
     def _project(self):
         projects = getattr(self.config.config, "projects", [])
@@ -214,6 +225,7 @@ class SyncManager:
         self._defer_startup_bin_baseline()
         self._stop_requested = False
         self._incremental_sync_suspended = False
+        self._startup_watch_window_started_ns = time.time_ns()
         self._emit("info", LogIcon.CHECK, self._tr("sync.host_baseline_start"))
         self._prime_host_file_signatures()
         run_token = self._advance_run_token()
@@ -222,12 +234,15 @@ class SyncManager:
         self._start_observer(run_token)
         self._start_poller(run_token)
         self._emit("info", LogIcon.START, self._tr("sync.service_started"))
+        self._enqueue_startup_window_changes(run_token)
         return True
 
     def stop(self):
         self._stop_requested = True
         self._running = False
         self._incremental_sync_suspended = False
+        self._startup_watch_window_started_ns = None
+        self._startup_window_candidate_paths = []
         self._advance_run_token()
         if self._debouncer:
             self._debouncer.cancel_all()
@@ -255,11 +270,11 @@ class SyncManager:
             cfg.vmx_path,
             cfg.vm_guest_user,
             cfg.vm_guest_password,
-            project.enabled,
-            project.host_project_path,
-            project.vm_project_path,
-            project.vm_bin_relative_path,
-            project.host_output_path,
+            getattr(project, "enabled", True),
+            getattr(project, "host_project_path", ""),
+            getattr(project, "vm_project_path", ""),
+            getattr(project, "vm_bin_relative_path", ""),
+            getattr(project, "host_output_path", ""),
             cfg.debounce_ms,
             cfg.poll_interval_sec,
             cfg.language,
@@ -376,7 +391,7 @@ class SyncManager:
         command.extend(args)
         return command
 
-    # ── Observer (Host → VM) ───────────────────────────────
+    # ── Observer (local PC -> virtual machine) ─────────────
 
     def _start_observer(self, run_token: int | None = None):
         host_root = self._project().host_project_path
@@ -426,13 +441,15 @@ class SyncManager:
             return
         if not self._copy_queue:
             return
-        if not self._host_file_content_changed(host_path):
+        signature = self._host_file_content_changed(host_path)
+        if signature is None:
             return
         with self._copy_lock:
             if host_path in self._copy_pending:
+                self._discard_queued_host_signature(host_path, signature)
                 return
             self._copy_pending.add(host_path)
-        self._copy_queue.put((run_token, host_path))
+        self._copy_queue.put((run_token, host_path, signature))
 
     def _watched_extensions(self) -> set[str]:
         return {ext.lower() for ext in self.config.config.watch_extensions}
@@ -461,6 +478,8 @@ class SyncManager:
     def _prime_host_file_signatures(self):
         root = Path(self._project().host_project_path)
         signatures: dict[str, tuple[int, str]] = {}
+        startup_candidates: list[str] = []
+        started_ns = self._startup_watch_window_started_ns
         if root.exists():
             extensions = self._watched_extensions()
             for path in root.rglob("*"):
@@ -469,20 +488,29 @@ class SyncManager:
                 signature = self._host_file_signature(str(path))
                 if signature is not None:
                     signatures[self._host_signature_key(str(path))] = signature
+                    if started_ns is not None:
+                        try:
+                            if path.stat().st_mtime_ns >= started_ns:
+                                startup_candidates.append(str(path))
+                        except OSError:
+                            pass
         with self._host_signature_lock:
             self._host_file_signatures = signatures
+            self._queued_host_file_signatures = {}
+        self._startup_window_candidate_paths = startup_candidates
 
-    def _host_file_content_changed(self, host_path: str) -> bool:
+    def _host_file_content_changed(self, host_path: str) -> tuple[int, str] | None:
         signature = self._host_file_signature(host_path)
         if signature is None:
-            return False
+            return None
         key = self._host_signature_key(host_path)
         with self._host_signature_lock:
             previous = self._host_file_signatures.get(key)
-            if previous == signature:
-                return False
-            self._host_file_signatures[key] = signature
-        return True
+            queued = self._queued_host_file_signatures.get(key)
+            if previous == signature or queued == signature:
+                return None
+            self._queued_host_file_signatures[key] = signature
+        return signature
 
     def _copy_worker_loop(self, run_token: int | None = None):
         while self._running and self._is_current_run_token(run_token):
@@ -496,7 +524,14 @@ class SyncManager:
                 item = copy_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            item_token, host_path = item if isinstance(item, tuple) else (run_token, item)
+            item_token = run_token
+            host_path = item
+            signature = None
+            if isinstance(item, tuple):
+                item_token = item[0]
+                host_path = item[1]
+                if len(item) > 2:
+                    signature = item[2]
             with self._copy_lock:
                 self._copy_pending.discard(host_path)
             try:
@@ -505,7 +540,11 @@ class SyncManager:
                     and not self._incremental_sync_suspended
                     and self._is_current_run_token(item_token)
                 ):
-                    self._do_copy_to_vm(host_path, run_token=item_token)
+                    self._do_copy_to_vm(
+                        host_path,
+                        run_token=item_token,
+                        expected_signature=signature,
+                    )
             finally:
                 try:
                     copy_queue.task_done()
@@ -525,6 +564,46 @@ class SyncManager:
                     break
         with self._copy_lock:
             self._copy_pending.clear()
+        with self._host_signature_lock:
+            self._queued_host_file_signatures.clear()
+
+    def _mark_host_file_synced(
+        self,
+        host_path: str,
+        signature: tuple[int, str] | None,
+        stale_signature: tuple[int, str] | None = None,
+    ):
+        resolved_signature = signature or self._host_file_signature(host_path)
+        if resolved_signature is None:
+            return
+        key = self._host_signature_key(host_path)
+        with self._host_signature_lock:
+            self._host_file_signatures[key] = resolved_signature
+            queued = self._queued_host_file_signatures.get(key)
+            if queued == resolved_signature or (
+                stale_signature is not None and queued == stale_signature
+            ):
+                self._queued_host_file_signatures.pop(key, None)
+
+    def _discard_queued_host_signature(
+        self,
+        host_path: str,
+        signature: tuple[int, str] | None,
+    ):
+        key = self._host_signature_key(host_path)
+        with self._host_signature_lock:
+            if signature is None:
+                self._queued_host_file_signatures.pop(key, None)
+            elif self._queued_host_file_signatures.get(key) == signature:
+                self._queued_host_file_signatures.pop(key, None)
+
+    def _discard_queued_host_signatures(
+        self,
+        host_path: str,
+        *signatures: tuple[int, str] | None,
+    ):
+        for signature in signatures:
+            self._discard_queued_host_signature(host_path, signature)
 
     def _suspend_incremental_uploads(self, host_path: str):
         if self._incremental_sync_suspended:
@@ -537,12 +616,21 @@ class SyncManager:
             self._tr("sync.incremental_suspended", filename=Path(host_path).name),
         )
 
-    def _do_copy_to_vm(self, host_path: str, run_token: int | None = None):
+    def _do_copy_to_vm(
+        self,
+        host_path: str,
+        run_token: int | None = None,
+        expected_signature: tuple[int, str] | None = None,
+    ):
         if not self._running:
             return
         if not self._is_current_run_token(run_token):
             return
         if self._incremental_sync_suspended:
+            return
+        upload_signature = self._host_file_signature(host_path)
+        if upload_signature is None:
+            self._discard_queued_host_signature(host_path, expected_signature)
             return
         try:
             project = self._project()
@@ -562,9 +650,11 @@ class SyncManager:
 
             mkdir = self._ensure_guest_directory(vm_dir)
             if not self._is_current_run_token(run_token) or not self._running:
+                self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                 return
             if mkdir.returncode != 0:
                 err = self._vmrun_error(mkdir)
+                self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                 self._emit("error", LogIcon.ERROR, self._tr("sync.mkdir_failed", path=rel, error=err))
                 return
 
@@ -585,6 +675,7 @@ class SyncManager:
                     or not self._is_current_run_token(run_token)
                 ):
                     self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
+                    self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                     return
                 move = self._move_guest_file(vm_tmp, vm_dest, timeout=15)
                 if (
@@ -593,30 +684,54 @@ class SyncManager:
                     or not self._is_current_run_token(run_token)
                 ):
                     self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
+                    self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                     return
                 if move.returncode != 0:
                     err = self._vmrun_error(move)
                     if not self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False):
                         self._emit("warning", LogIcon.CLEANUP, self._tr("sync.cleanup_tmp_failed", path=vm_tmp))
+                    self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                     self._emit("error", LogIcon.ERROR, self._tr("sync.write_target_failed", path=rel, error=err))
                     return
+                self._mark_host_file_synced(
+                    host_path,
+                    upload_signature,
+                    stale_signature=expected_signature,
+                )
                 self._synced_count += 1
                 self._emit("success", LogIcon.SUCCESS, self._tr("sync.to_vm_done", path=rel))
             else:
                 self._cleanup_guest_path(self.config.config.vmx_path, vm_tmp, is_dir=False)
                 if not self._is_current_run_token(run_token) or not self._running:
+                    self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                     return
                 err = result.stderr.strip() or "unknown error"
+                self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                 self._emit("error", LogIcon.ERROR, self._tr("sync.to_vm_failed", path=rel, error=err))
 
         except subprocess.TimeoutExpired:
             if self._is_current_run_token(run_token) and self._running:
+                self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                 self._suspend_incremental_uploads(host_path)
         except Exception as e:
             if self._is_current_run_token(run_token) and self._running:
+                self._discard_queued_host_signatures(host_path, expected_signature, upload_signature)
                 self._emit("error", LogIcon.ERROR, self._tr("sync.file_exception", filename=Path(host_path).name, error=e))
 
-    # ── Poller (VM → Host, .bin) ───────────────────────────
+    def _enqueue_startup_window_changes(self, run_token: int | None = None):
+        self._startup_watch_window_started_ns = None
+        candidate_paths = self._startup_window_candidate_paths
+        self._startup_window_candidate_paths = []
+        if (
+            not self._running
+            or not self._is_current_run_token(run_token)
+            or not self._copy_queue
+        ):
+            return
+        for path in candidate_paths:
+            self._enqueue_copy_to_vm(path, run_token)
+
+    # ── Poller (virtual machine -> local PC, .bin) ─────────
 
     def _start_poller(self, run_token: int | None = None):
         self._poller_thread = threading.Thread(
@@ -788,6 +903,9 @@ class SyncManager:
                 if not self._is_current_run_token(run_token):
                     self._bin_ready = False
                     return
+                if self._is_recent_post_copy_signature_match(vm_bin, signature):
+                    self._bin_ready = True
+                    return
                 unchanged_log_key = state_key
                 if state_key is not None:
                     self._last_bin_state = state_key
@@ -813,7 +931,9 @@ class SyncManager:
             if state_key is not None:
                 self._last_bin_state = state_key
                 self._last_bin_copied_content_key = self._bin_state_content_key(state_key)
-                self._last_bin_copied_at = time.time()
+            else:
+                self._last_bin_copied_content_key = self._bin_signature_content_key(vm_bin, signature)
+            self._last_bin_copied_at = time.time()
             self._bin_ready = True
             self._emit(
                 "success", LogIcon.DOWNLOAD,
@@ -831,6 +951,13 @@ class SyncManager:
         if len(state_key) < 4:
             return None
         return state_key[0], state_key[-1]
+
+    def _bin_signature_content_key(
+        self,
+        vm_bin: str,
+        signature: tuple[int, str],
+    ) -> tuple[str, str]:
+        return vm_bin.lower(), signature[-1]
 
     def _read_guest_bin_signature(self, vm_path: str, vmx: str) -> tuple[int, str] | None:
         tmp = tempfile.NamedTemporaryFile(
@@ -867,6 +994,21 @@ class SyncManager:
 
     def _is_recent_post_copy_timestamp_drift(self, state_key: tuple) -> bool:
         content_key = self._bin_state_content_key(state_key)
+        return self._is_recent_post_copy_content_key(content_key)
+
+    def _is_recent_post_copy_signature_match(
+        self,
+        vm_bin: str,
+        signature: tuple[int, str],
+    ) -> bool:
+        return self._is_recent_post_copy_content_key(
+            self._bin_signature_content_key(vm_bin, signature)
+        )
+
+    def _is_recent_post_copy_content_key(
+        self,
+        content_key: tuple[str, str] | None,
+    ) -> bool:
         if not content_key or content_key != self._last_bin_copied_content_key:
             return False
         if not self._last_bin_copied_at:
@@ -1015,6 +1157,7 @@ class SyncManager:
                     vm_dir,
                 ],
                 timeout=15,
+                serialize=False,
             )
         except subprocess.TimeoutExpired:
             return GuestBinListing(False, [], self._tr("sync.vm_timeout"))
@@ -1030,6 +1173,7 @@ class SyncManager:
                 vm_path,
             ],
             timeout=10,
+            serialize=False,
         )
         return "file exists" in (result.stdout or "").lower()
 
@@ -1081,6 +1225,7 @@ class SyncManager:
                         *self._guest_powershell_command(ps_command),
                     ],
                     timeout=10,
+                    serialize=False,
                 )
             except Exception:
                 return None
@@ -1240,55 +1385,6 @@ class SyncManager:
                 return match.group(0).strip()
         return None
 
-    def _get_guest_mtime(self, vm_path: str, vmx: str) -> float | None:
-        """Get file modification time inside guest via vmrun runProgramInGuest."""
-        vm_dir = str(Path(vm_path).parent)
-        vm_name = Path(vm_path).name
-        try:
-            result = self._run_vmrun(
-                [
-                    "runProgramInGuest",
-                    vmx,
-                    GUEST_CMD, "/c",
-                    f'dir /T:W "{vm_path}" 2>nul',
-                ],
-                timeout=10,
-            )
-            # Parse dir output: date and time
-            for line in result.stdout.splitlines():
-                if vm_name in line:
-                    # Windows dir format: MM/DD/YYYY  HH:MM AM/PM ...
-                    # or Chinese locale: YYYY/MM/DD  HH:MM ...
-                    parts = line.strip().split()
-                    # Take the date and time parts before the file size
-                    for i, p in enumerate(parts):
-                        if "/" in p or "-" in p or ":" in p:
-                            date_part = parts[i]
-                            time_part = parts[i + 1] if i + 1 < len(parts) else ""
-                            ampm = parts[i + 2] if i + 2 < len(parts) and parts[i + 2] in ("AM", "PM", "上午", "下午") else ""
-                            datetime_str = f"{date_part} {time_part} {ampm}".strip()
-                            try:
-                                from datetime import datetime as dt
-                                # Try multiple formats
-                                for fmt in [
-                                    "%Y/%m/%d %H:%M %p",
-                                    "%m/%d/%Y %H:%M %p",
-                                    "%Y/%m/%d %H:%M",
-                                    "%m/%d/%Y %H:%M",
-                                    "%Y/%m/%d %p %I:%M",
-                                ]:
-                                    try:
-                                        return dt.strptime(datetime_str, fmt).timestamp()
-                                    except ValueError:
-                                        continue
-                            except Exception:
-                                pass
-                            break
-        except Exception:
-            pass
-
-        return None
-
     # ── Event helpers ──────────────────────────────────────
 
     def _emit(self, level: str, icon: str, message: str):
@@ -1319,9 +1415,10 @@ class SyncManager:
             return self._tr("sync.guest_auth_failed")
         return err
 
-    def _ensure_guest_directory(self, vm_path: str):
+    def _ensure_guest_directory(self, vm_path: str, vmx: str | None = None):
+        vmx_path = vmx or self.config.config.vmx_path
         exists = self._run_vmrun(
-            ["directoryExistsInGuest", self.config.config.vmx_path, vm_path],
+            ["directoryExistsInGuest", vmx_path, vm_path],
             timeout=20,
         )
         output = ((exists.stdout or "") + "\n" + (exists.stderr or "")).lower()
@@ -1329,7 +1426,7 @@ class SyncManager:
             return exists
 
         created = self._run_vmrun(
-            ["createDirectoryInGuest", self.config.config.vmx_path, vm_path],
+            ["createDirectoryInGuest", vmx_path, vm_path],
             timeout=30,
         )
         return created
@@ -1337,8 +1434,21 @@ class SyncManager:
     def _syncable_files(self, host_root: Path) -> list[Path]:
         return [
             p for p in host_root.rglob("*")
-            if p.is_file()
+            if p.is_file() and not self._is_full_sync_excluded_path(host_root, p)
         ]
+
+    def _syncable_dirs(self, host_root: Path) -> list[Path]:
+        return [
+            p for p in host_root.rglob("*")
+            if p.is_dir() and not self._is_full_sync_excluded_path(host_root, p)
+        ]
+
+    def _is_full_sync_excluded_path(self, host_root: Path, path: Path) -> bool:
+        try:
+            parts = path.relative_to(host_root).parts
+        except ValueError:
+            parts = path.parts
+        return any(part.casefold() == "output" for part in parts)
 
     def _guest_path_join(self, root: str, name: str) -> str:
         return root.rstrip("\\/") + "\\" + name
@@ -1346,11 +1456,20 @@ class SyncManager:
     def _ps_literal(self, value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
-    def _run_vmrun(self, args: list[str], timeout: int):
+    def _run_vmrun(self, args: list[str], timeout: int, serialize: bool = True):
+        command = self._vmrun_command(args)
+        if not serialize:
+            return subprocess.run(
+                command,
+                capture_output=True, text=True, timeout=timeout,
+                errors="replace",
+                creationflags=_CREATE_FLAGS,
+            )
         with VMRUN_CALL_LOCK:
             return subprocess.run(
-                self._vmrun_command(args),
+                command,
                 capture_output=True, text=True, timeout=timeout,
+                errors="replace",
                 creationflags=_CREATE_FLAGS,
             )
 
@@ -1405,19 +1524,169 @@ class SyncManager:
         self._emit_progress(1.0, self._tr("sync.full.cancel_progress", message=message), active=False)
         return 0
 
-    def _create_full_sync_zip(self, host_root: Path, files: list[Path]) -> str:
+    def _create_full_sync_zip(
+        self,
+        host_root: Path,
+        files: list[Path],
+        dirs: list[Path] | None = None,
+    ) -> str:
         tmp = tempfile.NamedTemporaryFile(
             prefix="vm_sync_full_", suffix=".zip", delete=False
         )
         tmp.close()
         with zipfile.ZipFile(tmp.name, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            seen_dirs = set()
+            for host_dir in dirs or []:
+                rel_dir = host_dir.relative_to(host_root).as_posix().rstrip("/") + "/"
+                if rel_dir in seen_dirs:
+                    continue
+                seen_dirs.add(rel_dir)
+                archive.writestr(rel_dir, b"")
             for host_path in files:
                 rel = host_path.relative_to(host_root).as_posix()
                 archive.write(host_path, rel)
         return tmp.name
 
+    def _run_full_sync_vm_phase(
+        self,
+        vmx_path: str,
+        vm_project_path: str,
+        zip_path: str,
+        guest_cleanup: list[tuple[str, bool]],
+    ) -> int | None:
+        waited_for_turn = False
+        lock_acquired = FULL_SYNC_VM_PHASE_LOCK.acquire(blocking=False)
+        if not lock_acquired:
+            waited_for_turn = True
+            wait_message = self._tr("sync.full.wait_vm_phase")
+            self._emit("info", LogIcon.INFO, wait_message)
+            self._emit_progress(0.30, wait_message)
+            while not self._full_sync_cancel.is_set():
+                lock_acquired = FULL_SYNC_VM_PHASE_LOCK.acquire(timeout=0.2)
+                if lock_acquired:
+                    break
+            if not lock_acquired:
+                return self._cancel_full_sync(
+                    self._tr("sync.full.cancelled_before_upload")
+                )
+        try:
+            if waited_for_turn and not self._full_sync_cancel.is_set():
+                self._emit("info", LogIcon.INFO, self._tr("sync.full.resume_vm_phase"))
+
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_upload"))
+
+            self._emit_progress(0.35, self._tr("sync.full.step_create_dir"))
+            mkdir = self._ensure_guest_directory(vm_project_path, vmx_path)
+            if mkdir.returncode != 0:
+                err = self._vmrun_error(mkdir)
+                return self._fail_full_sync(self._tr("sync.full.create_dir_failed", error=err))
+
+            temp_marker = self._create_guest_tempfile(vmx_path)
+            if temp_marker:
+                guest_zip = temp_marker + f"_p{self.project_index + 1}.zip"
+                guest_stage_dir = temp_marker + f"_p{self.project_index + 1}_extract"
+                guest_cleanup.extend([
+                    (temp_marker, False),
+                    (guest_zip, False),
+                    (guest_stage_dir, True),
+                ])
+            else:
+                guest_zip = self._guest_path_join(
+                    vm_project_path,
+                    f"__vm_sync_fullsync_p{self.project_index + 1}.zip",
+                )
+                guest_stage_dir = self._guest_path_join(
+                    vm_project_path,
+                    f"__vm_sync_fullsync_p{self.project_index + 1}_extract",
+                )
+                guest_cleanup.extend([
+                    (guest_zip, False),
+                    (guest_stage_dir, True),
+                ])
+
+            self._emit_progress(0.50, self._tr("sync.full.step_upload"))
+            upload = self._run_vmrun(
+                [
+                    "CopyFileFromHostToGuest",
+                    vmx_path,
+                    zip_path,
+                    guest_zip,
+                ],
+                timeout=120,
+            )
+            if upload.returncode != 0:
+                err = self._vmrun_error(upload)
+                return self._fail_full_sync(self._tr("sync.full.upload_failed", error=err))
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_after_upload"))
+
+            self._emit_progress(0.65, self._tr("sync.full.step_create_stage"))
+            stage_dir = self._ensure_guest_directory(guest_stage_dir, vmx_path)
+            if stage_dir.returncode != 0:
+                err = self._vmrun_error(stage_dir)
+                return self._fail_full_sync(self._tr("sync.full.create_stage_failed", error=err))
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_extract"))
+
+            self._emit_progress(0.75, self._tr("sync.full.step_extract"))
+            extract_script = (
+                "$ErrorActionPreference='Stop'; "
+                f"Expand-Archive -LiteralPath {self._ps_literal(guest_zip)} "
+                f"-DestinationPath {self._ps_literal(guest_stage_dir)} -Force"
+            )
+            extract = self._run_vmrun(
+                [
+                    "runProgramInGuest",
+                    vmx_path,
+                    *self._guest_powershell_command(extract_script),
+                ],
+                timeout=180,
+            )
+            if extract.returncode != 0:
+                err = self._vmrun_error(extract)
+                return self._fail_full_sync(self._tr("sync.full.extract_failed", error=err))
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_cover"))
+
+            self._emit_progress(0.86, self._tr("sync.full.step_cover"))
+            cover_script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$src={self._ps_literal(guest_stage_dir)}; "
+                f"$dst={self._ps_literal(vm_project_path)}; "
+                "New-Item -ItemType Directory -Force -Path $dst | Out-Null; "
+                "$items=Get-ChildItem -LiteralPath $src -Force; "
+                "if ($items) { "
+                "$items | Copy-Item -Destination $dst -Recurse -Force "
+                "}"
+            )
+            cover = self._run_vmrun(
+                [
+                    "runProgramInGuest",
+                    vmx_path,
+                    *self._guest_powershell_command(cover_script),
+                ],
+                timeout=180,
+            )
+            if cover.returncode != 0:
+                err = self._vmrun_error(cover)
+                return self._fail_full_sync(self._tr("sync.full.cover_failed", error=err))
+            if self._full_sync_cancel.is_set():
+                return self._cancel_full_sync(self._tr("sync.full.cancelled_after_cover"))
+
+            self._emit_progress(0.92, self._tr("sync.full.step_cleanup"))
+            self._cleanup_full_sync_guest_paths(vmx_path, guest_cleanup)
+            guest_cleanup.clear()
+            return None
+        finally:
+            if lock_acquired:
+                if guest_cleanup and vmx_path:
+                    self._cleanup_full_sync_guest_paths(vmx_path, guest_cleanup)
+                    guest_cleanup.clear()
+                FULL_SYNC_VM_PHASE_LOCK.release()
+
     def full_sync(self) -> int:
-        """Full sync with cooperative cancellation and temporary VM staging."""
+        """Full sync with cooperative cancellation and virtual machine staging."""
         self._full_sync_cancel.clear()
         self._full_sync_active = True
         cfg = self.config.config
@@ -1446,6 +1715,7 @@ class SyncManager:
                 return 0
 
             files = self._syncable_files(host_root)
+            dirs = self._syncable_dirs(host_root)
             total = len(files)
             if total == 0:
                 self._emit("warning", LogIcon.WARNING, self._tr("sync.full.empty"))
@@ -1455,103 +1725,20 @@ class SyncManager:
             self._emit("info", LogIcon.TOOL, self._tr("sync.full.start", count=total))
             self._emit_progress(0.0, self._tr("sync.full.step_files"))
             self._emit_progress(0.15, self._tr("sync.full.step_compress"))
-            zip_path = self._create_full_sync_zip(host_root, files)
+            zip_path = self._create_full_sync_zip(host_root, files, dirs)
             zip_size_mb = Path(zip_path).stat().st_size / (1024 * 1024)
             self._emit("info", LogIcon.PACKAGE, self._tr("sync.full.package_ready", size=zip_size_mb))
             if self._full_sync_cancel.is_set():
                 return self._cancel_full_sync(self._tr("sync.full.cancelled_before_upload"))
 
-            self._emit_progress(0.35, self._tr("sync.full.step_create_dir"))
-            mkdir = self._ensure_guest_directory(project.vm_project_path)
-            if mkdir.returncode != 0:
-                err = self._vmrun_error(mkdir)
-                return self._fail_full_sync(self._tr("sync.full.create_dir_failed", error=err))
-
-            temp_marker = self._create_guest_tempfile(cfg.vmx_path)
-            if temp_marker:
-                guest_zip = temp_marker + ".zip"
-                guest_stage_dir = temp_marker + "_extract"
-                guest_cleanup.extend([
-                    (temp_marker, False),
-                    (guest_zip, False),
-                    (guest_stage_dir, True),
-                ])
-            else:
-                guest_zip = self._guest_path_join(project.vm_project_path, "__vm_sync_fullsync.zip")
-                guest_stage_dir = self._guest_path_join(project.vm_project_path, "__vm_sync_fullsync_extract")
-                guest_cleanup.extend([
-                    (guest_zip, False),
-                    (guest_stage_dir, True),
-                ])
-
-            self._emit_progress(0.50, self._tr("sync.full.step_upload"))
-            upload = self._run_vmrun(
-                [
-                    "CopyFileFromHostToGuest",
-                    cfg.vmx_path,
-                    zip_path,
-                    guest_zip,
-                ],
-                timeout=120,
+            vm_phase_result = self._run_full_sync_vm_phase(
+                cfg.vmx_path,
+                project.vm_project_path,
+                zip_path,
+                guest_cleanup,
             )
-            if upload.returncode != 0:
-                err = self._vmrun_error(upload)
-                return self._fail_full_sync(self._tr("sync.full.upload_failed", error=err))
-            if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync(self._tr("sync.full.cancelled_after_upload"))
-
-            self._emit_progress(0.65, self._tr("sync.full.step_create_stage"))
-            stage_dir = self._ensure_guest_directory(guest_stage_dir)
-            if stage_dir.returncode != 0:
-                err = self._vmrun_error(stage_dir)
-                return self._fail_full_sync(self._tr("sync.full.create_stage_failed", error=err))
-            if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_extract"))
-
-            self._emit_progress(0.75, self._tr("sync.full.step_extract"))
-            extract_script = (
-                "$ErrorActionPreference='Stop'; "
-                f"Expand-Archive -LiteralPath {self._ps_literal(guest_zip)} "
-                f"-DestinationPath {self._ps_literal(guest_stage_dir)} -Force"
-            )
-            extract = self._run_vmrun(
-                [
-                    "runProgramInGuest",
-                    cfg.vmx_path,
-                    *self._guest_powershell_command(extract_script),
-                ],
-                timeout=180,
-            )
-            if extract.returncode != 0:
-                err = self._vmrun_error(extract)
-                return self._fail_full_sync(self._tr("sync.full.extract_failed", error=err))
-            if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync(self._tr("sync.full.cancelled_before_cover"))
-
-            self._emit_progress(0.86, self._tr("sync.full.step_cover"))
-            cover_script = (
-                "$ErrorActionPreference='Stop'; "
-                f"New-Item -ItemType Directory -Force -Path {self._ps_literal(project.vm_project_path)} | Out-Null; "
-                f"Copy-Item -LiteralPath {self._ps_literal(self._guest_path_join(guest_stage_dir, '*'))} "
-                f"-Destination {self._ps_literal(project.vm_project_path)} -Recurse -Force"
-            )
-            cover = self._run_vmrun(
-                [
-                    "runProgramInGuest",
-                    cfg.vmx_path,
-                    *self._guest_powershell_command(cover_script),
-                ],
-                timeout=180,
-            )
-            if cover.returncode != 0:
-                err = self._vmrun_error(cover)
-                return self._fail_full_sync(self._tr("sync.full.cover_failed", error=err))
-            if self._full_sync_cancel.is_set():
-                return self._cancel_full_sync(self._tr("sync.full.cancelled_after_cover"))
-
-            self._emit_progress(0.92, self._tr("sync.full.step_cleanup"))
-            self._cleanup_full_sync_guest_paths(cfg.vmx_path, guest_cleanup)
-            guest_cleanup = []
+            if vm_phase_result is not None:
+                return vm_phase_result
 
             self._synced_count += total
             self._emit_progress(1.0, self._tr("sync.full.done_progress", done=total, total=total), active=False)

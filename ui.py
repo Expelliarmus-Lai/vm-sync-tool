@@ -1,5 +1,7 @@
 """UI layer: CustomTkinter window, panels, system tray, theme management."""
 
+from __future__ import annotations
+
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -798,6 +800,9 @@ class ConfigPanel(ctk.CTkFrame):
     def _tr(self, key: str, **kwargs) -> str:
         return app_tr(self.app, key, **kwargs)
 
+    def _config_source(self):
+        return self.app.cm.config
+
     def _build(self):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(10, 5))
@@ -898,7 +903,7 @@ class ConfigPanel(ctk.CTkFrame):
             **entry_kwargs,
         )
         entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        val = getattr(self.app.cm.config, key, "")
+        val = getattr(self._config_source(), key, "")
         if val:
             entry.insert(0, val)
         if key in self._NORMALIZED_PATH_ENTRY_KEYS:
@@ -1059,9 +1064,14 @@ class ConfigPanel(ctk.CTkFrame):
         if text == ".":
             return text
 
-        root = self._normalize_windows_path(
-            vm_project_path or getattr(self.app.cm.config, "vm_project_path", "")
-        )
+        if vm_project_path is not None:
+            root_path = vm_project_path
+        else:
+            try:
+                root_path = self._current_vm_project_path_for_normalization()
+            except AttributeError:
+                root_path = getattr(self._config_source(), "vm_project_path", "")
+        root = self._normalize_windows_path(root_path)
         if root and self._is_windows_absolute_path(text):
             relative = self._relative_path_under_root(text, root)
             if relative is not None:
@@ -1526,6 +1536,9 @@ class SharedVmPanel(ctk.CTkFrame):
     def _tr(self, key: str, **kwargs) -> str:
         return app_tr(self.app, key, **kwargs)
 
+    def _config_source(self):
+        return self.app.cm.config
+
     def _build(self):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(10, 5))
@@ -1681,6 +1694,9 @@ class MultiConfigPanel(_OriginalConfigPanel):
             return projects[self.project_index]
         return self.app.cm.config
 
+    def _config_source(self):
+        return self._project_config()
+
     def _sync_manager(self):
         getter = getattr(self.app, "get_sync_manager", None)
         if callable(getter):
@@ -1701,52 +1717,6 @@ class MultiConfigPanel(_OriginalConfigPanel):
         button = getattr(self.app, "remove_project_btn", None)
         if self.project_index == 1 and button is not None:
             button.configure(state="normal" if enabled else "disabled")
-
-    def _add_field(self, parent, key, label_key, mode, placeholder_key):
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", pady=2)
-        label = ctk.CTkLabel(
-            row, text=self._tr(label_key), width=132, anchor="w",
-            font=ui_font(size=12),
-            text_color=current_palette()["text_dim"],
-        )
-        label.pack(side="left", padx=(0, 6))
-        self._field_labels[key] = label
-        self._field_placeholder_keys[key] = placeholder_key
-        entry = ctk.CTkEntry(
-            row,
-            height=30,
-            corner_radius=CONTROL_CORNER_RADIUS,
-            font=ui_font(size=12),
-            border_color=current_palette()["entry_border"],
-            fg_color=current_palette()["entry_bg"],
-            placeholder_text_color=current_palette()["text_dim"],
-            placeholder_text=self._tr(placeholder_key),
-        )
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        value = getattr(self._project_config(), key, "")
-        if value:
-            entry.insert(0, value)
-        if key in self._NORMALIZED_PATH_ENTRY_KEYS:
-            entry.bind("<FocusOut>", lambda _event, k=key: self._normalize_entry_display(k))
-            entry.bind("<Return>", lambda _event, k=key: self._normalize_entry_display(k))
-        self._entries[key] = entry
-        if mode in ("dir", "file"):
-            button = ctk.CTkButton(
-                row,
-                text="",
-                image=self._folder_icon,
-                width=42,
-                height=32,
-                corner_radius=CONTROL_CORNER_RADIUS,
-                font=ui_font(size=12),
-                fg_color=current_palette()["muted_button"],
-                hover_color=current_palette()["muted_hover"],
-                text_color=current_palette()["text"],
-                command=lambda k=key, m=mode: self._browse(k, m),
-            )
-            button.pack(side="right")
-            self._browse_buttons[key] = button
 
     def _save_values_only(self, emit_log: bool = False):
         shared_vm_panel = getattr(self.app, "shared_vm_panel", None)
@@ -1789,23 +1759,6 @@ class MultiConfigPanel(_OriginalConfigPanel):
         entry = self._entries.get("vm_project_path")
         value = entry.get() if entry else getattr(self._project_config(), "vm_project_path", "")
         return self._normalize_entry_value("vm_project_path", value)
-
-    def _normalize_vm_bin_relative_path(self, value: str, vm_project_path: str | None = None) -> str:
-        text = value.replace("/", "\\")
-        drive, _tail = ntpath.splitdrive(text)
-        if not drive:
-            text = text.lstrip("\\")
-        text = ntpath.normpath(text)
-        if text == ".":
-            return text
-        root = self._normalize_windows_path(
-            vm_project_path or getattr(self._project_config(), "vm_project_path", "")
-        )
-        if root and self._is_windows_absolute_path(text):
-            relative = self._relative_path_under_root(text, root)
-            if relative is not None:
-                return relative
-        return text
 
     def update_bin_path_hint(self, check_guest: bool = False):
         p = current_palette()
@@ -1897,6 +1850,9 @@ class MultiConfigPanel(_OriginalConfigPanel):
             return
         self.set_config_enabled(False)
         self._set_project_toggle_enabled(False)
+        project_panel = getattr(self.app, "project_panels", {}).get(self.project_index)
+        if project_panel is not None and hasattr(project_panel, "set_full_sync_active"):
+            project_panel.set_full_sync_active(True)
         self.app.control.set_full_sync_active(True)
         self._set_full_sync_button_active(True)
         self._full_sync_thread = threading.Thread(target=self._run_full_sync)
@@ -1921,6 +1877,9 @@ class MultiConfigPanel(_OriginalConfigPanel):
             self.set_config_enabled(enabled)
             self._set_project_toggle_enabled(enabled)
             self._set_full_sync_button_active(False, enabled=enabled)
+            project_panel = getattr(self.app, "project_panels", {}).get(self.project_index)
+            if project_panel is not None and hasattr(project_panel, "set_full_sync_active"):
+                project_panel.set_full_sync_active(False)
             self.app.control.set_full_sync_active(False)
         except tk.TclError:
             pass
@@ -2110,6 +2069,22 @@ class ProjectPane(ctk.CTkFrame):
             setter = getattr(self.app, "_set_secondary_project_action_enabled", None)
             if callable(setter):
                 setter(not running)
+
+    def set_full_sync_active(self, active: bool):
+        p = current_palette()
+        if active:
+            self.start_btn.configure(state="disabled", fg_color=p["border"])
+            self.pause_btn.configure(
+                state="disabled",
+                fg_color=p["muted_button"],
+                hover_color=p["muted_hover"],
+                text_color=p["text_dim"],
+            )
+            if self.toggle_btn is not None:
+                self.toggle_btn.configure(state="disabled")
+            return
+        sync = self._sync_manager()
+        self._set_project_running_ui(bool(getattr(sync, "running", False)))
 
     def _refresh_app_running_state(self):
         any_running = False
@@ -2348,16 +2323,30 @@ class MultiControlPanel(_OriginalControlPanel):
             return
         self._append_log(event)
 
-    def _log_start_all_blocked(self, passed_indexes: list[int], failed_project_index: int):
+    def _log_start_all_blocked(
+        self,
+        passed_indexes: list[int],
+        failed_project_indexes: list[int],
+    ):
+        failed_numbers = self._format_project_numbers(failed_project_indexes)
         message = self._tr(
             "ui.start.blocked_by_project",
-            number=failed_project_index + 1,
+            number=failed_numbers,
         )
         for project_index in passed_indexes:
             self._append_project_log(
                 project_index,
                 LogEvent(LogIcon.WARNING, message, "warning"),
             )
+
+    def _format_project_numbers(self, project_indexes: list[int]) -> str:
+        numbers = [str(index + 1) for index in project_indexes]
+        language = getattr(getattr(self.app, "cm", None), "config", None)
+        language = getattr(language, "language", "zh")
+        separator = "、" if language == "zh" else ", "
+        if language != "zh" and len(numbers) > 1:
+            return f"{separator.join(numbers[:-1])} and {numbers[-1]}"
+        return separator.join(numbers)
 
     def _prepare_project_start_check(self, project_index: int):
         panel = self._project_panel(project_index)
@@ -2436,6 +2425,7 @@ class MultiControlPanel(_OriginalControlPanel):
         reports: dict[int, PreflightReport] = {}
         snapshots = {}
         passed_indexes = []
+        failed_indexes = []
         for project_index in enabled_indexes:
             try:
                 if callable(collector):
@@ -2447,16 +2437,8 @@ class MultiControlPanel(_OriginalControlPanel):
                 report = PreflightReport(errors=[str(e)])
             reports[project_index] = report
             if not report.ok:
-                self.after(
-                    0,
-                    lambda reports=reports, passed_indexes=passed_indexes, project_index=project_index:
-                        self._finish_start_preflight_failed(
-                            reports,
-                            passed_indexes,
-                            project_index,
-                        )
-                )
-                return
+                failed_indexes.append(project_index)
+                continue
             sync = self._sync_manager(project_index)
             if sync and hasattr(sync, "preflight_snapshot"):
                 snapshot = sync.preflight_snapshot()
@@ -2464,6 +2446,17 @@ class MultiControlPanel(_OriginalControlPanel):
                 if project_index == 0:
                     self._start_preflight_snapshot = snapshot
             passed_indexes.append(project_index)
+        if failed_indexes:
+            self.after(
+                0,
+                lambda reports=reports, passed_indexes=passed_indexes, failed_indexes=failed_indexes:
+                    self._finish_start_preflight_failed(
+                        reports,
+                        passed_indexes,
+                        failed_indexes,
+                    )
+            )
+            return
         self._start_preflight_snapshots = snapshots
         for project_index in enabled_indexes:
             self._apply_project_preflight_report_before_start(
@@ -2472,11 +2465,16 @@ class MultiControlPanel(_OriginalControlPanel):
             )
         started_indexes = []
         errors = []
-        started = True
-        for project_index in enabled_indexes:
+        start_results = {}
+        result_lock = threading.Lock()
+
+        def start_project(project_index: int):
             sync = self._sync_manager(project_index)
             if sync is None:
-                continue
+                with result_lock:
+                    start_results[project_index] = True
+                return
+            ok = False
             try:
                 ok = sync.start(
                     preflight_checked=True,
@@ -2484,11 +2482,27 @@ class MultiControlPanel(_OriginalControlPanel):
                 )
             except Exception as e:
                 ok = False
-                errors.append(f"project {project_index + 1}: {e}")
-            if not ok:
-                started = False
-                break
-            started_indexes.append(project_index)
+                with result_lock:
+                    errors.append(f"project {project_index + 1}: {e}")
+            with result_lock:
+                start_results[project_index] = bool(ok)
+                if ok:
+                    started_indexes.append(project_index)
+
+        start_threads = []
+        for project_index in enabled_indexes:
+            thread = threading.Thread(
+                target=lambda project_index=project_index: start_project(project_index),
+                daemon=True,
+            )
+            start_threads.append(thread)
+            thread.start()
+        for thread in start_threads:
+            join = getattr(thread, "join", None)
+            if callable(join):
+                join()
+
+        started = all(start_results.get(project_index, False) for project_index in enabled_indexes)
         if not started:
             for project_index in reversed(started_indexes):
                 try:
@@ -2503,11 +2517,11 @@ class MultiControlPanel(_OriginalControlPanel):
         self,
         reports: dict[int, PreflightReport],
         passed_indexes: list[int],
-        failed_project_index: int,
+        failed_project_indexes: list[int],
     ):
         for project_index, report in reports.items():
             self._apply_project_preflight_report(project_index, report)
-        self._log_start_all_blocked(passed_indexes, failed_project_index)
+        self._log_start_all_blocked(passed_indexes, failed_project_indexes)
         self._start_preflight_snapshot = None
         self._start_preflight_snapshots = {}
         self._set_stopped()
@@ -2586,12 +2600,19 @@ class MultiControlPanel(_OriginalControlPanel):
         self._last_uptime_text = text
 
     def set_full_sync_active(self, active: bool):
-        self._full_sync_active = active
         p = current_palette()
-        if active:
+        any_full_sync = active
+        app = getattr(self, "app", None)
+        checker = getattr(app, "any_full_sync_active", None)
+        if callable(checker):
+            any_full_sync = active or checker()
+        self._full_sync_active = bool(any_full_sync)
+        if any_full_sync:
             self.start_btn.configure(state="disabled", fg_color=p["border"])
             return
-        any_running = getattr(self.app, "any_running", lambda: getattr(self.app.sync, "running", False))()
+        any_running = False
+        if app is not None:
+            any_running = getattr(app, "any_running", lambda: getattr(app.sync, "running", False))()
         if not any_running:
             self.start_btn.configure(
                 state="normal",
@@ -2769,6 +2790,12 @@ class App:
         if not sync_managers:
             return getattr(self.sync, "running", False)
         return any(getattr(sync, "running", False) for sync in sync_managers)
+
+    def any_full_sync_active(self) -> bool:
+        sync_managers = getattr(self, "sync_managers", None)
+        if not sync_managers:
+            return getattr(self.sync, "full_sync_active", False)
+        return any(getattr(sync, "full_sync_active", False) for sync in sync_managers)
 
     def aggregate_sync_count(self) -> int:
         return sum(
@@ -2968,19 +2995,6 @@ class App:
             scrollbar_button_hover_color=p["accent"],
         )
         self.scroll_area.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-
-        self.config_panel = ConfigPanel(self.scroll_area.inner, self)
-        self.config_panel.pack(fill="x", padx=CONTENT_SIDE_PADDING, pady=(4, 4))
-
-        self.log_panel = LogPanel(self.scroll_area.inner, self)
-        self.log_panel.pack(fill="x", padx=CONTENT_SIDE_PADDING, pady=(0, 4))
-        self.scroll_area.add_wheel_exclusion(self.log_panel.textbox)
-        self.scroll_area.add_wheel_exclusion(
-            getattr(self.log_panel.textbox, "_textbox", None)
-        )
-
-        self.config_panel.pack_forget()
-        self.log_panel.pack_forget()
 
         self.shared_vm_shell = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
         self.shared_vm_shell.pack(
@@ -3559,26 +3573,37 @@ class App:
         sync_managers = getattr(self, "sync_managers", None)
         if not sync_managers:
             sync_managers = [self.sync]
+        manager_views = []
         for index, sync in enumerate(sync_managers):
             project_panel = getattr(self, "project_panels", {}).get(index)
             log_panel = getattr(project_panel, "log_panel", getattr(self, "log_panel", None))
-            try:
-                while processed < self.EVENTS_PER_TICK:
+            manager_views.append((index, sync, project_panel, log_panel))
+
+        made_progress = True
+        while processed < self.EVENTS_PER_TICK and made_progress:
+            made_progress = False
+            for index, sync, _project_panel, log_panel in manager_views:
+                if processed >= self.EVENTS_PER_TICK:
+                    break
+                try:
                     event = sync.event_queue.get_nowait()
-                    processed += 1
-                    event_type, data = event
-                    if event_type == "log" and log_panel is not None:
-                        log_panel.append(data)
-                    elif event_type == "bin_ready":
-                        self._on_bin_ready(data, index)
-                    elif event_type == "bin_unchanged":
-                        self._on_bin_unchanged(data, index)
-                    elif event_type == "full_sync_progress" and log_panel is not None:
-                        log_panel.update_progress(data)
-                    elif event_type == "info" and data == "sync_stopped":
-                        pass
-            except queue.Empty:
-                pass
+                except queue.Empty:
+                    continue
+                made_progress = True
+                processed += 1
+                event_type, data = event
+                if event_type == "log" and log_panel is not None:
+                    log_panel.append(data)
+                elif event_type == "bin_ready":
+                    self._on_bin_ready(data, index)
+                elif event_type == "bin_unchanged":
+                    self._on_bin_unchanged(data, index)
+                elif event_type == "full_sync_progress" and log_panel is not None:
+                    log_panel.update_progress(data)
+                elif event_type == "info" and data == "sync_stopped":
+                    pass
+
+        for index, sync, project_panel, _log_panel in manager_views:
             if project_panel is not None and hasattr(project_panel, "update_stats"):
                 project_panel.update_stats(sync.synced_count, sync.bin_ready)
 

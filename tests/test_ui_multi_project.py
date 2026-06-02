@@ -1,5 +1,7 @@
 import inspect
 import queue
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -150,6 +152,14 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertIn("shared_vm_panel", source)
         self.assertIn("project_panels", source)
         self.assertIn("add_project", source)
+
+    def test_app_build_ui_does_not_create_hidden_legacy_panels(self):
+        source = inspect.getsource(App._build_ui)
+
+        self.assertNotIn("self.config_panel = ConfigPanel(self.scroll_area.inner, self)", source)
+        self.assertNotIn("self.log_panel = LogPanel(self.scroll_area.inner, self)", source)
+        self.assertNotIn("self.config_panel.pack_forget()", source)
+        self.assertNotIn("self.log_panel.pack_forget()", source)
 
     def test_config_panel_targets_project_indexed_config(self):
         source = inspect.getsource(ConfigPanel)
@@ -302,6 +312,35 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertIn((3, True), app.project_panels[0].stats_updates)
         self.assertIn((7, False), app.project_panels[1].stats_updates)
 
+    def test_poll_events_gives_each_project_a_chance_with_small_tick_budget(self):
+        app = object.__new__(App)
+        app._shutting_down = False
+        app._maybe_check_appearance_change = lambda: None
+        app._schedule_after = lambda *_args, **_kwargs: None
+        app.EVENTS_PER_TICK = 2
+        app._on_bin_ready = lambda *_args, **_kwargs: None
+        app._on_bin_unchanged = lambda *_args, **_kwargs: None
+        app.sync_managers = [
+            FakeSync(0, synced_count=3, bin_ready=True),
+            FakeSync(1, synced_count=7, bin_ready=False),
+        ]
+        app.project_panels = {
+            0: FakeProjectPanel(),
+            1: FakeProjectPanel(),
+        }
+        app.control = SimpleNamespace(update_stats=lambda *_args: None)
+        app.aggregate_sync_count = lambda: 10
+        app.aggregate_bin_ready = lambda: False
+
+        app.sync_managers[0].event_queue.put(("log", LogEvent("i", "project-1-first", "info")))
+        app.sync_managers[0].event_queue.put(("log", LogEvent("i", "project-1-second", "info")))
+        app.sync_managers[1].event_queue.put(("log", LogEvent("i", "project-2-first", "info")))
+
+        App._poll_events(app)
+
+        self.assertEqual(["project-1-first"], [event.message for event in app.project_panels[0].log_panel.events])
+        self.assertEqual(["project-2-first"], [event.message for event in app.project_panels[1].log_panel.events])
+
     def test_start_all_is_atomic_across_enabled_projects(self):
         calls = []
 
@@ -337,6 +376,53 @@ class MultiProjectUiTests(unittest.TestCase):
         with patch("ui.threading.Thread", ImmediateThread):
             ControlPanel._start(control)
 
+        self.assertEqual([], syncs[0].start_calls)
+        self.assertEqual([], syncs[1].start_calls)
+
+    def test_start_all_checks_every_enabled_project_before_blocking_on_failures(self):
+        collected = []
+        emitted = []
+        reports = {
+            0: PreflightReport(errors=["bad project 1"]),
+            1: PreflightReport(errors=["bad project 2"]),
+        }
+        syncs = [FakeSync(0), FakeSync(1)]
+
+        def collect(project_index=0, **_kwargs):
+            collected.append(project_index)
+            return reports[project_index]
+
+        control = object.__new__(ControlPanel)
+        control.app = SimpleNamespace(
+            project_panels={
+                0: FakeProjectPanel(),
+                1: FakeProjectPanel(),
+            },
+            get_enabled_project_indexes=lambda: [0, 1],
+            get_sync_manager=lambda index: syncs[index],
+            sync_managers=syncs,
+            _collect_preflight_report=collect,
+            _emit_preflight_report=lambda report, project_index=None, **_kwargs: emitted.append(
+                (project_index, tuple(report.errors))
+            ),
+            set_all_config_enabled=lambda _enabled: None,
+            _update_status_indicator=lambda _running: None,
+            _update_tray_menu=lambda: None,
+            cm=SimpleNamespace(config=SimpleNamespace(language="zh")),
+        )
+        control.start_btn = FakeButton()
+        control.pause_btn = FakeButton()
+        control.uptime_label = FakeButton()
+        control.after = lambda _delay, callback: callback()
+        control._start_time = None
+        control._last_uptime_text = ""
+
+        with patch("ui.threading.Thread", ImmediateThread):
+            ControlPanel._start(control)
+
+        self.assertEqual([0, 1], collected)
+        self.assertIn((0, ("bad project 1",)), emitted)
+        self.assertIn((1, ("bad project 2",)), emitted)
         self.assertEqual([], syncs[0].start_calls)
         self.assertEqual([], syncs[1].start_calls)
 
@@ -378,6 +464,7 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertIn("项目 2", event.message)
         self.assertIn("未启动", event.message)
         self.assertIn("配置", event.message)
+        self.assertIn("单独启动", event.message)
 
     def test_start_all_emits_preflight_reports_before_starting_projects(self):
         calls = []
@@ -420,6 +507,59 @@ class MultiProjectUiTests(unittest.TestCase):
 
         self.assertLess(calls.index(("preflight", 0)), calls.index(("start", 0)))
         self.assertLess(calls.index(("preflight", 1)), calls.index(("start", 1)))
+
+    def test_start_all_starts_projects_concurrently_after_preflight(self):
+        p1_started = threading.Event()
+        p1_continue = threading.Event()
+        p2_started = threading.Event()
+
+        class BlockingSync(FakeSync):
+            def start(self, **kwargs):
+                self.start_calls.append(kwargs)
+                if self.project_index == 0:
+                    p1_started.set()
+                    self.assertTrue(p1_continue.wait(timeout=5))
+                else:
+                    p2_started.set()
+                self.running = True
+                return True
+
+        syncs = [BlockingSync(0), BlockingSync(1)]
+        control = object.__new__(ControlPanel)
+        control.app = SimpleNamespace(
+            project_panels={
+                0: FakeProjectPanel(),
+                1: FakeProjectPanel(),
+            },
+            get_enabled_project_indexes=lambda: [0, 1],
+            get_sync_manager=lambda index: syncs[index],
+            sync_managers=syncs,
+            _collect_preflight_report=lambda project_index=0, **_kwargs: PreflightReport(),
+            _emit_preflight_report=lambda _report, **_kwargs: None,
+            set_all_config_enabled=lambda _enabled: None,
+            _update_status_indicator=lambda _running: None,
+            _update_tray_menu=lambda: None,
+            cm=SimpleNamespace(config=SimpleNamespace(language="zh")),
+        )
+        control.start_btn = FakeButton()
+        control.pause_btn = FakeButton()
+        control.uptime_label = FakeButton()
+        control.after = lambda _delay, callback: callback()
+        control._start_time = None
+        control._last_uptime_text = ""
+
+        worker = threading.Thread(target=ControlPanel._start_worker, args=(control,))
+        worker.start()
+        self.assertTrue(p1_started.wait(timeout=5))
+        time.sleep(0.2)
+
+        try:
+            self.assertTrue(p2_started.is_set())
+        finally:
+            p1_continue.set()
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
 
     def test_top_start_and_pause_all_updates_project_controls(self):
         control = object.__new__(ControlPanel)
@@ -642,6 +782,38 @@ class MultiProjectUiTests(unittest.TestCase):
         App._update_status_indicator(app, True)
 
         self.assertEqual("部分异常", app.status_text.configures[-1]["text"])
+
+    def test_control_keeps_start_disabled_while_another_project_full_syncs(self):
+        control = object.__new__(ControlPanel)
+        control.start_btn = FakeButton()
+        control.app = SimpleNamespace(
+            any_running=lambda: False,
+            any_full_sync_active=lambda: True,
+            sync=SimpleNamespace(running=False),
+        )
+
+        ControlPanel.set_full_sync_active(control, False)
+
+        self.assertTrue(
+            any(call.get("state") == "disabled" for call in control.start_btn.configures)
+        )
+        self.assertFalse(
+            any(call.get("state") == "normal" for call in control.start_btn.configures)
+        )
+
+    def test_project_pane_disables_project_start_pause_during_full_sync(self):
+        pane = object.__new__(ui.ProjectPane)
+        pane.start_btn = FakeButton()
+        pane.pause_btn = FakeButton()
+        pane.toggle_btn = FakeButton()
+        pane.project_index = 0
+        pane.config_panel = SimpleNamespace(set_config_enabled=lambda _enabled: None)
+        pane._sync_manager = lambda: SimpleNamespace(running=False)
+
+        ui.ProjectPane.set_full_sync_active(pane, True)
+
+        self.assertTrue(any(call.get("state") == "disabled" for call in pane.start_btn.configures))
+        self.assertTrue(any(call.get("state") == "disabled" for call in pane.pause_btn.configures))
 
 
 if __name__ == "__main__":

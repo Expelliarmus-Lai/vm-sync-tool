@@ -70,6 +70,13 @@ class VmrunResolverTests(unittest.TestCase):
 
         self.assertEqual(15, run.call_args.kwargs["timeout"])
 
+    def test_list_running_vms_replaces_invalid_output_bytes(self):
+        with patch("vmrun_resolver.subprocess.run", return_value=Completed()) as run:
+            list_running_vms(r"C:\VMware\vmrun.exe")
+
+        self.assertTrue(run.call_args.kwargs["text"])
+        self.assertEqual("replace", run.call_args.kwargs["errors"])
+
     def test_normalize_vmx_path_uses_absolute_casefolded_path(self):
         self.assertEqual(
             normalize_vmx_path(r"C:\VMs\A\..\A\Machine.vmx"),

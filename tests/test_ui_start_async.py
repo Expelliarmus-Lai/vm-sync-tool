@@ -159,7 +159,7 @@ class StartButtonTests(unittest.TestCase):
             validate_bin_target=lambda emit=False: SimpleNamespace(
                 ok=False,
                 level="error",
-                message=r"VM .bin 文件不存在: Output\wrong.bin",
+                message=r"虚拟机 .bin 文件不存在: Output\wrong.bin",
             )
         )
         app.log_panel = FakeLogPanel()

@@ -1,6 +1,9 @@
 ﻿"""Preflight checks that keep sync operations pointed at the intended project."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+
 from pathlib import PureWindowsPath, Path
 from typing import List, Dict, Optional, Tuple
 
@@ -223,7 +226,17 @@ class PreflightChecker:
         )
 
     def _count_project_files(self, host_root: Path) -> int:
-        return sum(1 for p in host_root.rglob("*") if p.is_file())
+        return sum(
+            1 for p in host_root.rglob("*")
+            if p.is_file() and not self._is_full_sync_excluded_path(host_root, p)
+        )
+
+    def _is_full_sync_excluded_path(self, host_root: Path, path: Path) -> bool:
+        try:
+            parts = path.relative_to(host_root).parts
+        except ValueError:
+            parts = path.parts
+        return any(part.casefold() == "output" for part in parts)
 
     def _check_bin_name_matches_project(self, proj: ProjectConfig, pr: ProjectPreflightReport):
         if PureWindowsPath(proj.vm_bin_relative_path).suffix.lower() != ".bin":
@@ -251,13 +264,25 @@ class PreflightChecker:
                 if p1.host_project_path and p2.host_project_path:
                     if self._is_subpath(p1.host_project_path, p2.host_project_path) or \
                        self._is_subpath(p2.host_project_path, p1.host_project_path):
-                        report.errors.append(f"Project {idx1 + 1} and Project {idx2 + 1} have overlapping host_project_paths.")
+                        report.errors.append(
+                            self.t(
+                                "preflight.host_project.overlap",
+                                first=idx1 + 1,
+                                second=idx2 + 1,
+                            )
+                        )
                         
                 # check vm path overlap
                 if p1.vm_project_path and p2.vm_project_path:
                     if self._is_subpath(p1.vm_project_path, p2.vm_project_path) or \
                        self._is_subpath(p2.vm_project_path, p1.vm_project_path):
-                        report.errors.append(f"Project {idx1 + 1} and Project {idx2 + 1} have overlapping vm_project_paths.")
+                        report.errors.append(
+                            self.t(
+                                "preflight.vm_project.overlap",
+                                first=idx1 + 1,
+                                second=idx2 + 1,
+                            )
+                        )
 
     def _is_subpath(self, path1: str, path2: str) -> bool:
         p1 = PureWindowsPath(path1)

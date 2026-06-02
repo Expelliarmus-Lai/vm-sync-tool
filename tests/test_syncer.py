@@ -3,6 +3,7 @@ import inspect
 import queue
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -36,6 +37,18 @@ class SyncManagerTests(unittest.TestCase):
     def test_firmware_ready_log_uses_fire_icon(self):
         self.assertEqual("🔥", syncer.LogIcon.FIRMWARE)
 
+    def test_translator_is_cached_until_language_changes(self):
+        manager, cm = self._manager()
+
+        self.assertEqual("同步服务已启动", manager._tr("sync.service_started"))
+        first_translator = manager._translator
+        self.assertEqual("同步服务已停止", manager._tr("sync.service_stopped"))
+        self.assertIs(first_translator, manager._translator)
+
+        cm.config.language = "en"
+        self.assertEqual("Sync service started", manager._tr("sync.service_started"))
+        self.assertIsNot(first_translator, manager._translator)
+
     def test_full_sync_cancel_log_uses_cancel_emoji(self):
         manager, _cm = self._manager()
 
@@ -52,28 +65,8 @@ class SyncManagerTests(unittest.TestCase):
         cm.config.language = "zh"
         return SyncManager(cm), cm
 
-    def test_guest_mtime_returns_none_when_dir_output_cannot_be_parsed(self):
-        manager, cm = self._manager()
-
-        with patch("syncer.subprocess.run", return_value=Completed(stdout="unexpected output")):
-            mtime = manager._get_guest_mtime(
-                r"C:\project\Output\firmware.bin",
-                cm.config.vmx_path,
-            )
-
-        self.assertIsNone(mtime)
-
-    def test_guest_mtime_uses_absolute_guest_cmd_path(self):
-        manager, cm = self._manager()
-        cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
-        cm.config.vm_guest_user = "h"
-        cm.config.vm_guest_password = "password"
-
-        with patch("syncer.subprocess.run", return_value=Completed(stdout="unexpected output")) as run:
-            manager._get_guest_mtime(r"C:\project\Output\firmware.bin", cm.config.vmx_path)
-
-        command = run.call_args.args[0]
-        self.assertIn(r"C:\Windows\System32\cmd.exe", command)
+    def test_guest_mtime_dead_code_is_removed(self):
+        self.assertFalse(hasattr(SyncManager, "_get_guest_mtime"))
 
     def test_guest_file_state_uses_powershell_ticks_length_and_hash(self):
         manager, cm = self._manager()
@@ -99,6 +92,145 @@ class SyncManagerTests(unittest.TestCase):
         self.assertIn("-NonInteractive", command)
         self.assertIn("SHA256", command_text)
         self.assertEqual((638838144000000000, 4096, digest), state)
+
+    def test_guest_file_state_stdout_queries_can_run_in_parallel(self):
+        manager1, cm = self._manager()
+        manager2 = SyncManager(cm, project_index=1)
+        cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+        cm.config.vmx_path = r"C:\VMs\dev.vmx"
+        cm.config.vm_guest_user = "h"
+        cm.config.vm_guest_password = "password"
+        digest = "a" * 64
+        active = 0
+        max_active = 0
+        active_lock = threading.Lock()
+        both_inside = threading.Event()
+        results = []
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal active, max_active
+            with active_lock:
+                active += 1
+                max_active = max(max_active, active)
+                if active == 2:
+                    both_inside.set()
+            try:
+                both_inside.wait(timeout=0.3)
+                return Completed(stdout=f"638838144000000000|4096|{digest}\n")
+            finally:
+                with active_lock:
+                    active -= 1
+
+        def read_state(manager):
+            results.append(
+                manager._get_guest_file_state(
+                    r"C:\project\Output\firmware.bin",
+                    cm.config.vmx_path,
+                )
+            )
+
+        with patch("syncer.subprocess.run", side_effect=fake_run):
+            t1 = threading.Thread(target=read_state, args=(manager1,))
+            t2 = threading.Thread(target=read_state, args=(manager2,))
+            t1.start()
+            t2.start()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
+
+        self.assertFalse(t1.is_alive())
+        self.assertFalse(t2.is_alive())
+        self.assertEqual([(638838144000000000, 4096, digest)] * 2, results)
+        self.assertGreaterEqual(max_active, 2)
+
+    def test_vmrun_file_copy_operations_remain_serialized(self):
+        manager1, cm = self._manager()
+        manager2 = SyncManager(cm, project_index=1)
+        cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+        cm.config.vm_guest_user = "h"
+        cm.config.vm_guest_password = "password"
+        active = 0
+        max_active = 0
+        active_lock = threading.Lock()
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal active, max_active
+            with active_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.05)
+                return Completed(returncode=0)
+            finally:
+                with active_lock:
+                    active -= 1
+
+        with patch("syncer.subprocess.run", side_effect=fake_run):
+            t1 = threading.Thread(
+                target=manager1._run_vmrun,
+                args=(["CopyFileFromGuestToHost", r"C:\VMs\dev.vmx", r"C:\a.bin", r"C:\out\a.bin"], 10),
+            )
+            t2 = threading.Thread(
+                target=manager2._run_vmrun,
+                args=(["CopyFileFromGuestToHost", r"C:\VMs\dev.vmx", r"C:\b.bin", r"C:\out\b.bin"], 10),
+            )
+            t1.start()
+            t2.start()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
+
+        self.assertFalse(t1.is_alive())
+        self.assertFalse(t2.is_alive())
+        self.assertEqual(1, max_active)
+
+    def test_vmrun_output_decoding_replaces_invalid_bytes(self):
+        manager, cm = self._manager()
+        cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+        cm.config.vm_guest_user = "h"
+        cm.config.vm_guest_password = "password"
+
+        with patch("syncer.subprocess.run", return_value=Completed()) as run:
+            manager._run_vmrun(["list"], timeout=5)
+
+        self.assertTrue(run.call_args.kwargs["text"])
+        self.assertEqual("replace", run.call_args.kwargs["errors"])
+
+    def test_bin_target_read_only_guest_checks_can_run_in_parallel(self):
+        manager1, cm = self._manager()
+        manager2 = SyncManager(cm, project_index=1)
+        cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+        cm.config.vmx_path = r"C:\VMs\dev.vmx"
+        cm.config.vm_guest_user = "h"
+        cm.config.vm_guest_password = "password"
+        active = 0
+        max_active = 0
+        active_lock = threading.Lock()
+        both_inside = threading.Event()
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal active, max_active
+            with active_lock:
+                active += 1
+                max_active = max(max_active, active)
+                if active == 2:
+                    both_inside.set()
+            try:
+                both_inside.wait(timeout=0.3)
+                return Completed(stdout="The file exists.", returncode=0)
+            finally:
+                with active_lock:
+                    active -= 1
+
+        with patch("syncer.subprocess.run", side_effect=fake_run):
+            t1 = threading.Thread(target=manager1._guest_file_exists, args=(r"C:\project\a.bin",))
+            t2 = threading.Thread(target=manager2._guest_file_exists, args=(r"C:\project\b.bin",))
+            t1.start()
+            t2.start()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
+
+        self.assertFalse(t1.is_alive())
+        self.assertFalse(t2.is_alive())
+        self.assertGreaterEqual(max_active, 2)
 
     def test_guest_file_state_falls_back_to_guest_tempfile_sidecar_output(self):
         manager, cm = self._manager()
@@ -188,7 +320,7 @@ class SyncManagerTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertTrue(any("deleteFileInGuest" in cmd for cmd in commands))
 
-    def test_check_bin_copies_existing_bin_without_guest_mtime(self):
+    def test_check_bin_copies_existing_bin_without_guest_state(self):
         manager, cm = self._manager()
         with tempfile.TemporaryDirectory() as out:
             cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
@@ -209,7 +341,7 @@ class SyncManagerTests(unittest.TestCase):
                 return Completed(returncode=0)
 
             with patch("syncer.subprocess.run", side_effect=fake_run), \
-                    patch.object(manager, "_get_guest_mtime", return_value=None):
+                    patch.object(manager, "_get_guest_file_state", return_value=None):
                 manager._check_bin()
 
             copied = Path(out) / "firmware.bin"
@@ -546,6 +678,46 @@ class SyncManagerTests(unittest.TestCase):
             self.assertFalse(any("内容未变化" in message for message in logs))
             self.assertEqual([], unchanged_events)
 
+    def test_recent_post_copy_same_signature_is_suppressed_when_guest_state_is_unavailable(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+
+            copies = []
+
+            def fake_run(cmd, **_kwargs):
+                if "fileExistsInGuest" in cmd:
+                    return Completed(stdout="The file exists.", returncode=0)
+                if "CopyFileFromGuestToHost" in cmd:
+                    copies.append(cmd)
+                    Path(cmd[-1]).write_bytes(b"firmware-v1")
+                    return Completed(returncode=0)
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(manager, "_get_guest_file_state", return_value=None), \
+                    patch("syncer.time.time", side_effect=[100.0, 104.0]):
+                manager._check_bin()
+                manager._check_bin()
+
+            self.assertEqual(2, len(copies))
+            logs = []
+            unchanged_events = []
+            while not manager.event_queue.empty():
+                event_type, data = manager.event_queue.get_nowait()
+                if event_type == "log":
+                    logs.append(data.message)
+                if event_type == "bin_unchanged":
+                    unchanged_events.append(data)
+            self.assertFalse(any("内容未变化" in message for message in logs))
+            self.assertEqual([], unchanged_events)
+
     def test_stop_suppresses_late_unchanged_bin_update_events(self):
         manager, _cm = self._manager()
         manager._stop_requested = True
@@ -668,7 +840,8 @@ class SyncManagerTests(unittest.TestCase):
                 return Completed(returncode=0)
 
             with patch("syncer.subprocess.run", side_effect=fake_run), \
-                    patch.object(manager, "_get_guest_file_state", return_value=None):
+                    patch.object(manager, "_get_guest_file_state", return_value=None), \
+                    patch("syncer.time.time", side_effect=[100.0, 120.0]):
                 manager._check_bin()
                 manager._check_bin()
 
@@ -703,7 +876,8 @@ class SyncManagerTests(unittest.TestCase):
                     return Completed(returncode=0)
                 return Completed(returncode=0)
 
-            with patch("syncer.subprocess.run", side_effect=fake_run):
+            with patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch("syncer.time.time", side_effect=[100.0, 120.0]):
                 manager._check_bin()
                 manager._check_bin()
 
@@ -869,6 +1043,15 @@ class SyncManagerTests(unittest.TestCase):
 
         self.assertFalse(started)
         self.assertFalse(manager.running)
+
+    def test_preflight_snapshot_tolerates_missing_project_list(self):
+        manager, cm = self._manager()
+        cm.config.projects = []
+
+        snapshot = manager.preflight_snapshot()
+
+        self.assertTrue(snapshot[4])
+        self.assertEqual("", snapshot[5])
 
     def test_start_logs_host_baseline_before_hashing_files(self):
         manager, _cm = self._manager()
@@ -1202,6 +1385,18 @@ class SyncManagerTests(unittest.TestCase):
                 logs.append(data.message)
         self.assertTrue(any("增量同步已暂停" in message for message in logs))
 
+    def test_suspended_worker_drains_queue_with_task_done(self):
+        manager, _cm = self._manager()
+        manager._running = True
+        manager._incremental_sync_suspended = True
+        manager._copy_queue = queue.Queue()
+        manager._copy_queue.put((None, r"C:\project\main.c", None))
+
+        manager._copy_worker_loop()
+
+        self.assertTrue(manager._copy_queue.empty())
+        self.assertEqual(0, manager._copy_queue.unfinished_tasks)
+
     def test_incremental_copy_uses_guest_temp_then_move(self):
         manager, cm = self._manager()
         with tempfile.TemporaryDirectory() as host:
@@ -1235,6 +1430,88 @@ class SyncManagerTests(unittest.TestCase):
         command_text = "\n".join(" ".join(cmd) for cmd in commands)
         self.assertIn("Move-Item", command_text)
         self.assertIn(r"C:\project\Src\main.c", command_text)
+
+    def test_incremental_copy_marks_current_signature_when_file_changed_while_pending(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            host_file = host_root / "Src" / "main.c"
+            host_file.parent.mkdir()
+            host_file.write_text("int main(void) { return 0; }", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.host_project_path = host
+            cm.config.vm_project_path = r"C:\project"
+
+            original_signature = manager._host_file_signature(str(host_file))
+            host_file.write_text("int main(void) { return 1; }", encoding="utf-8")
+            current_signature = manager._host_file_signature(str(host_file))
+            key = manager._host_signature_key(str(host_file))
+            manager._queued_host_file_signatures[key] = original_signature
+
+            def fake_run(cmd, **_kwargs):
+                if "directoryExistsInGuest" in cmd:
+                    return Completed(stdout="The directory exists.", returncode=0)
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run):
+                manager._running = True
+                manager._do_copy_to_vm(
+                    str(host_file),
+                    expected_signature=original_signature,
+                )
+
+        self.assertEqual(current_signature, manager._host_file_signatures[key])
+        self.assertNotIn(key, manager._queued_host_file_signatures)
+
+    def test_incremental_copy_failure_allows_same_content_to_be_requeued(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            host_file = host_root / "Src" / "main.c"
+            host_file.parent.mkdir()
+            host_file.write_text("int main(void) { return 0; }", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.host_project_path = host
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            with patch.object(manager, "_can_start", return_value=True), \
+                    patch.object(manager, "_start_poller"), \
+                    patch.object(manager, "_start_copy_worker"):
+                self.assertTrue(manager.start())
+
+            manager._copy_queue = queue.Queue()
+            manager._copy_pending = set()
+            host_file.write_text("int main(void) { return 1; }", encoding="utf-8")
+            run_token = manager._run_token
+
+            manager._enqueue_copy_to_vm(str(host_file), run_token)
+            first_item = manager._copy_queue.get_nowait()
+            with manager._copy_lock:
+                manager._copy_pending.discard(str(host_file))
+
+            def fake_run(cmd, **_kwargs):
+                if "directoryExistsInGuest" in cmd:
+                    return Completed(stdout="The directory exists.", returncode=0)
+                if "CopyFileFromHostToGuest" in cmd:
+                    return Completed(stderr="copy failed", returncode=1)
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run):
+                manager._do_copy_to_vm(str(host_file), run_token=run_token)
+
+            manager._enqueue_copy_to_vm(str(host_file), run_token)
+            second_item = manager._copy_queue.get_nowait()
+            manager.stop()
+
+        self.assertEqual((run_token, str(host_file)), first_item[:2])
+        self.assertEqual((run_token, str(host_file)), second_item[:2])
 
     def test_late_incremental_copy_from_stale_run_does_not_move_to_final_path(self):
         manager, cm = self._manager()
@@ -1271,6 +1548,64 @@ class SyncManagerTests(unittest.TestCase):
         self.assertIn("CopyFileFromHostToGuest", command_text)
         self.assertNotIn("Move-Item", command_text)
         self.assertEqual(0, manager.synced_count)
+
+    def test_startup_window_changes_are_enqueued_after_observer_starts(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            host_file = host_root / "Src" / "main.c"
+            host_file.parent.mkdir()
+            host_file.write_text("int main(void) { return 0; }", encoding="utf-8")
+            cm.config.host_project_path = host
+            cm.config.vmx_path = r"C:\vm\machine.vmx"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            real_prime = manager._prime_host_file_signatures
+
+            def prime_then_modify():
+                real_prime()
+                host_file.write_text("int main(void) { return 1; }", encoding="utf-8")
+
+            def fake_start_copy_worker(_run_token=None):
+                manager._copy_queue = queue.Queue()
+                manager._copy_pending = set()
+
+            with patch.object(manager, "_can_start", return_value=True), \
+                    patch.object(manager, "_prime_host_file_signatures", side_effect=prime_then_modify), \
+                    patch.object(manager, "_start_copy_worker", side_effect=fake_start_copy_worker), \
+                    patch.object(manager, "_start_observer"), \
+                    patch.object(manager, "_start_poller"), \
+                    patch("syncer.time.time_ns", return_value=0):
+                self.assertTrue(manager.start())
+            started_run_token = manager._run_token
+
+            queued = []
+            while not manager._copy_queue.empty():
+                queued.append(manager._copy_queue.get_nowait())
+            manager.stop()
+
+        self.assertEqual([(started_run_token, str(host_file))], [(item[0], item[1]) for item in queued])
+
+    def test_start_reports_service_started_before_startup_window_requeue(self):
+        manager, _cm = self._manager()
+        logs_seen_during_requeue = []
+
+        def capture_logs(_run_token=None):
+            while not manager.event_queue.empty():
+                event_type, data = manager.event_queue.get_nowait()
+                if event_type == "log":
+                    logs_seen_during_requeue.append(data.message)
+
+        with patch.object(manager, "_can_start", return_value=True), \
+                patch.object(manager, "_prime_host_file_signatures"), \
+                patch.object(manager, "_start_copy_worker"), \
+                patch.object(manager, "_start_observer"), \
+                patch.object(manager, "_start_poller"), \
+                patch.object(manager, "_enqueue_startup_window_changes", side_effect=capture_logs):
+            self.assertTrue(manager.start())
+
+        self.assertTrue(any("同步服务已启动" in message for message in logs_seen_during_requeue))
 
     def test_late_bin_copy_from_stale_run_does_not_overwrite_host_output(self):
         manager, cm = self._manager()
@@ -1381,10 +1716,158 @@ class SyncManagerTests(unittest.TestCase):
 
         self.assertEqual(0, count)
         command_text = "\n".join(" ".join(cmd) for cmd in commands)
-        self.assertIn(guest_temp + ".zip", command_text)
+        self.assertIn(guest_temp + "_p1.zip", command_text)
         self.assertIn("Remove-Item", command_text)
-        self.assertIn(guest_temp + "_extract", command_text)
+        self.assertIn(guest_temp + "_p1_extract", command_text)
         self.assertNotIn("Expand-Archive", command_text)
+
+    def test_parallel_full_sync_waits_for_other_project_vm_phase(self):
+        manager1, cm = self._manager()
+        manager2 = SyncManager(cm, project_index=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            host1 = root / "p1"
+            host2 = root / "p2"
+            host1.mkdir()
+            host2.mkdir()
+            (host1 / "main.c").write_text("int p1(void) { return 1; }", encoding="utf-8")
+            (host2 / "main.c").write_text("int p2(void) { return 2; }", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.projects[0].enabled = True
+            cm.config.projects[0].host_project_path = str(host1)
+            cm.config.projects[0].vm_project_path = r"C:\project1"
+            cm.config.projects[0].host_output_path = str(root / "out1")
+            cm.config.projects[1].enabled = True
+            cm.config.projects[1].host_project_path = str(host2)
+            cm.config.projects[1].vm_project_path = r"C:\project2"
+            cm.config.projects[1].host_output_path = str(root / "out2")
+
+            vm_commands = []
+            p1_in_vm_phase = threading.Event()
+            p1_continue = threading.Event()
+
+            def fake_run(cmd, **_kwargs):
+                vm_commands.append(cmd)
+                if "CreateTempfileInGuest" in cmd:
+                    return Completed(stdout=rf"C:\Users\h\AppData\Local\Temp\vm_sync_{len(vm_commands)}.tmp", returncode=0)
+                if "directoryExistsInGuest" in cmd:
+                    return Completed(stdout="The directory exists.", returncode=0)
+                return Completed(returncode=0)
+
+            def p1_ensure_guest_directory(vm_path, *_args):
+                p1_in_vm_phase.set()
+                self.assertTrue(p1_continue.wait(timeout=5))
+                return Completed(stdout="The directory exists.", returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(manager1, "_ensure_guest_directory", side_effect=p1_ensure_guest_directory):
+                t1 = threading.Thread(target=manager1.full_sync)
+                t1.start()
+                self.assertTrue(p1_in_vm_phase.wait(timeout=5))
+
+                t2 = threading.Thread(target=manager2.full_sync)
+                t2.start()
+                time.sleep(0.2)
+
+                try:
+                    self.assertEqual([], vm_commands)
+                    waiting_logs = []
+                    while not manager2.event_queue.empty():
+                        event_type, data = manager2.event_queue.get_nowait()
+                        if event_type == "log":
+                            waiting_logs.append(data.message)
+                    self.assertTrue(
+                        any("另一个项目正在执行虚拟机全量同步" in message for message in waiting_logs)
+                    )
+                finally:
+                    p1_continue.set()
+                    t1.join(timeout=5)
+                    t2.join(timeout=5)
+
+            self.assertFalse(t1.is_alive())
+            self.assertFalse(t2.is_alive())
+            resumed_logs = []
+            while not manager2.event_queue.empty():
+                event_type, data = manager2.event_queue.get_nowait()
+                if event_type == "log":
+                    resumed_logs.append(data.message)
+            self.assertTrue(
+                any("继续执行本项目全量同步" in message for message in resumed_logs)
+            )
+
+    def test_full_sync_waiting_for_vm_phase_can_be_cancelled(self):
+        manager1, cm = self._manager()
+        manager2 = SyncManager(cm, project_index=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            host1 = root / "p1"
+            host2 = root / "p2"
+            host1.mkdir()
+            host2.mkdir()
+            (host1 / "main.c").write_text("int p1(void) { return 1; }", encoding="utf-8")
+            (host2 / "main.c").write_text("int p2(void) { return 2; }", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.projects[0].enabled = True
+            cm.config.projects[0].host_project_path = str(host1)
+            cm.config.projects[0].vm_project_path = r"C:\project1"
+            cm.config.projects[0].host_output_path = str(root / "out1")
+            cm.config.projects[1].enabled = True
+            cm.config.projects[1].host_project_path = str(host2)
+            cm.config.projects[1].vm_project_path = r"C:\project2"
+            cm.config.projects[1].host_output_path = str(root / "out2")
+
+            p1_in_vm_phase = threading.Event()
+            p1_continue = threading.Event()
+
+            def fake_run(cmd, **_kwargs):
+                if "CreateTempfileInGuest" in cmd:
+                    return Completed(stdout=r"C:\Users\h\AppData\Local\Temp\vm_sync.tmp", returncode=0)
+                if "directoryExistsInGuest" in cmd:
+                    return Completed(stdout="The directory exists.", returncode=0)
+                return Completed(returncode=0)
+
+            def p1_ensure_guest_directory(vm_path, *_args):
+                p1_in_vm_phase.set()
+                self.assertTrue(p1_continue.wait(timeout=5))
+                return Completed(stdout="The directory exists.", returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run), \
+                    patch.object(manager1, "_ensure_guest_directory", side_effect=p1_ensure_guest_directory):
+                t1 = threading.Thread(target=manager1.full_sync)
+                t1.start()
+                self.assertTrue(p1_in_vm_phase.wait(timeout=5))
+
+                t2 = threading.Thread(target=manager2.full_sync)
+                t2.start()
+                try:
+                    deadline = time.time() + 5
+                    saw_wait_log = False
+                    while time.time() < deadline:
+                        queued = list(manager2.event_queue.queue)
+                        saw_wait_log = any(
+                            event_type == "log"
+                            and "另一个项目正在执行虚拟机全量同步" in data.message
+                            for event_type, data in queued
+                        )
+                        if saw_wait_log:
+                            break
+                        time.sleep(0.05)
+                    self.assertTrue(saw_wait_log)
+
+                    manager2.request_full_sync_cancel()
+                    t2.join(timeout=2)
+                    self.assertFalse(t2.is_alive())
+                finally:
+                    p1_continue.set()
+                    t1.join(timeout=5)
+
+            self.assertFalse(t1.is_alive())
 
     def test_cleanup_treats_missing_guest_path_as_success(self):
         manager, cm = self._manager()
@@ -1440,6 +1923,8 @@ class SyncManagerTests(unittest.TestCase):
                         self.assertEqual(
                             sorted(archive.namelist()),
                             [
+                                "Tool/",
+                                "Tool/precompile/",
                                 "Tool/precompile/helper.exe",
                                 "Tool/precompile/pch_support.bat",
                                 "ignored.bin",
@@ -1467,6 +1952,92 @@ class SyncManagerTests(unittest.TestCase):
         self.assertTrue(all("-WindowStyle" in cmd and "Hidden" in cmd for cmd in powershell_commands))
         self.assertTrue(all("-NonInteractive" in cmd for cmd in powershell_commands))
         self.assertTrue(any("Remove-Item" in " ".join(cmd) for cmd in commands))
+
+    def test_full_sync_zip_preserves_empty_directories(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            (host_root / "main.c").write_text("int main(void) { return 0; }", encoding="utf-8")
+            (host_root / "Generated" / "empty").mkdir(parents=True)
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.host_project_path = host
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            def fake_run(cmd, **_kwargs):
+                if "CopyFileFromHostToGuest" in cmd:
+                    zip_path = Path(cmd[cmd.index("CopyFileFromHostToGuest") + 2])
+                    with zipfile.ZipFile(zip_path) as archive:
+                        self.assertIn("Generated/empty/", archive.namelist())
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run):
+                count = manager.full_sync()
+
+        self.assertEqual(1, count)
+
+    def test_full_sync_skips_output_directory_contents(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            (host_root / "main.c").write_text("int main(void) { return 0; }", encoding="utf-8")
+            (host_root / "Output" / "RL6492").mkdir(parents=True)
+            (host_root / "Output" / "RL6492" / "RL6492_Project.bin").write_bytes(b"firmware")
+            (host_root / "Output" / "build.log").write_text("build output", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.host_project_path = host
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            def fake_run(cmd, **_kwargs):
+                if "CopyFileFromHostToGuest" in cmd:
+                    zip_path = Path(cmd[cmd.index("CopyFileFromHostToGuest") + 2])
+                    with zipfile.ZipFile(zip_path) as archive:
+                        names = archive.namelist()
+                        self.assertIn("main.c", names)
+                        self.assertFalse(any(name.lower().startswith("output/") for name in names))
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run):
+                count = manager.full_sync()
+
+        self.assertEqual(1, count)
+
+    def test_full_sync_cover_copies_stage_children_without_literal_wildcard(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as host:
+            host_root = Path(host)
+            (host_root / "main.c").write_text("int main(void) { return 0; }", encoding="utf-8")
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.host_project_path = host
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.host_output_path = host
+
+            commands = []
+
+            def fake_run(cmd, **_kwargs):
+                commands.append(cmd)
+                return Completed(returncode=0)
+
+            with patch("syncer.subprocess.run", side_effect=fake_run):
+                manager.full_sync()
+
+        cover_commands = [
+            " ".join(cmd) for cmd in commands
+            if "Copy-Item" in " ".join(cmd)
+        ]
+        self.assertTrue(cover_commands)
+        self.assertTrue(any("Get-ChildItem -LiteralPath" in cmd for cmd in cover_commands))
+        self.assertFalse(any("\\*'" in cmd or "\\* " in cmd for cmd in cover_commands))
 
     def test_full_sync_rejects_empty_guest_password_before_vmrun(self):
         manager, cm = self._manager()

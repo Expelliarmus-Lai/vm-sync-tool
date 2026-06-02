@@ -167,6 +167,15 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
 
         self.assertEqual(r"C:\Output\firmware.bin", cm.config.vm_bin_relative_path)
 
+    def test_save_skips_rewrite_when_json_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            cm = ConfigManager(str(config_path))
+            cm.save()
+
+            with patch("builtins.open", side_effect=AssertionError("unexpected rewrite")):
+                cm.save()
+
 
 if __name__ == "__main__":
     unittest.main()

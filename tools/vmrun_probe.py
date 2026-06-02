@@ -45,6 +45,7 @@ def run(label: str, args: list[str], timeout: int = 30):
             capture_output=True,
             text=True,
             timeout=timeout,
+            errors="replace",
             creationflags=CREATE_FLAGS,
         )
     except subprocess.TimeoutExpired:

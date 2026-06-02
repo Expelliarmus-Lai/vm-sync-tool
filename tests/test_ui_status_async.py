@@ -44,7 +44,7 @@ class StatusCheckTests(unittest.TestCase):
         )
         app.status_bar = SimpleNamespace(
             vmrun_label=FakeLabel("vmrun 就绪"),
-            vm_label=FakeLabel("● VM 运行中"),
+            vm_label=FakeLabel("● 虚拟机运行中"),
             poll_label=FakeLabel(""),
         )
         app.resolve_vmrun_path = lambda save=False: r"C:\VMware\vmrun.exe"

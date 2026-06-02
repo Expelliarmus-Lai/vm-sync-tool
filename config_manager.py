@@ -117,12 +117,8 @@ class ConfigManager:
     def save(self):
         self._save()
 
-    def _save(self):
-        self.normalize_paths()
-        self.normalize_runtime_defaults()
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        # Avoid writing legacy properties into JSON by extracting __dict__ explicitly
-        config_dict = {
+    def _to_dict(self):
+        return {
             "vmrun_path": self.config.vmrun_path,
             "vmx_path": self.config.vmx_path,
             "vm_guest_user": self.config.vm_guest_user,
@@ -131,10 +127,23 @@ class ConfigManager:
             "debounce_ms": self.config.debounce_ms,
             "poll_interval_sec": self.config.poll_interval_sec,
             "watch_extensions": self.config.watch_extensions,
-            "projects": [asdict(p) for p in self.config.projects]
+            "projects": [asdict(p) for p in self.config.projects],
         }
+
+    def _save(self):
+        self.normalize_paths()
+        self.normalize_runtime_defaults()
+        # Avoid writing legacy properties into JSON by extracting __dict__ explicitly
+        config_text = json.dumps(self._to_dict(), indent=2, ensure_ascii=False)
+        if self.config_path.exists():
+            try:
+                if self.config_path.read_text(encoding="utf-8") == config_text:
+                    return
+            except OSError:
+                pass
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(config_dict, f, indent=2, ensure_ascii=False)
+            f.write(config_text)
 
     def normalize_paths(self) -> bool:
         before = json.dumps({

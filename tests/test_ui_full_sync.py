@@ -38,13 +38,13 @@ class FullSyncUiTests(unittest.TestCase):
     def test_config_placeholders_are_short_and_specific(self):
         zh = Translator("zh")
 
-        self.assertEqual("当前运行 VM 的 .vmx", zh.tr("ui.config.placeholder.vmx"))
-        self.assertEqual("VM Windows 登录用户名", zh.tr("ui.config.placeholder.vm_user"))
-        self.assertEqual("VM Windows 登录密码", zh.tr("ui.config.placeholder.vm_password"))
-        self.assertEqual("宿主机 Keil 工程根目录", zh.tr("ui.config.placeholder.host_project"))
-        self.assertEqual(r"VM 内工程根目录，如 C:\project", zh.tr("ui.config.placeholder.vm_project"))
-        self.assertEqual(r"相对 VM 工程，如 Output\RL6492", zh.tr("ui.config.placeholder.bin"))
-        self.assertEqual("宿主机固件回传目录", zh.tr("ui.config.placeholder.host_output"))
+        self.assertEqual("当前运行虚拟机的 .vmx", zh.tr("ui.config.placeholder.vmx"))
+        self.assertEqual("虚拟机 Windows 登录用户名", zh.tr("ui.config.placeholder.vm_user"))
+        self.assertEqual("虚拟机 Windows 登录密码", zh.tr("ui.config.placeholder.vm_password"))
+        self.assertEqual("本机 Keil 工程根目录", zh.tr("ui.config.placeholder.host_project"))
+        self.assertEqual(r"虚拟机内工程根目录，如 C:\project", zh.tr("ui.config.placeholder.vm_project"))
+        self.assertEqual(r"相对虚拟机工程，如 Output\RL6492", zh.tr("ui.config.placeholder.bin"))
+        self.assertEqual("本机固件回传目录", zh.tr("ui.config.placeholder.host_output"))
 
     def test_config_panel_refreshes_empty_placeholders_after_build(self):
         source = inspect.getsource(ConfigPanel._build)
@@ -252,7 +252,7 @@ class FullSyncUiTests(unittest.TestCase):
         self.assertIn("_is_wheel_excluded", frame_source)
         self.assertIn("bind_all", frame_source)
         self.assertNotIn("unbind_all", frame_source)
-        self.assertIn("add_wheel_exclusion(self.log_panel.textbox)", build_source)
+        self.assertIn("add_wheel_exclusion(panel.log_panel.textbox)", build_source)
 
     def test_outer_scroll_does_not_force_layout_during_configure(self):
         source = inspect.getsource(AutoScrollFrame)

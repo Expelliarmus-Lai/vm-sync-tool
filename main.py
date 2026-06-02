@@ -1,11 +1,13 @@
-﻿"""VM Sync Tool 鈥?Entry point.
+﻿"""VM Sync Tool entry point.
 
-Syncs source files from host to VMware VM for Keil compilation,
-pulls compiled .bin back to host, via vmrun.exe (no network required).
+Syncs source files from the local PC to a VMware virtual machine for Keil
+compilation, then pulls the compiled .bin back to the local PC via vmrun.exe.
 
 Usage:
     python main.py
 """
+
+from __future__ import annotations
 
 import sys
 import os
