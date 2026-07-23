@@ -46,7 +46,7 @@ The intended workflow is:
 - The tray menu is bilingual/dynamic: status, show, start/pause, and quit labels update after language switching and can show running, partially running, or partially degraded state. The start/pause menu item is bold/default in the menu, while tray icon activation itself restores the window instead of toggling sync.
 - The source repository has bilingual project documentation: Chinese `README.md` and English `README.en.md`.
 - The release user guide is also bilingual: `docs/USER_GUIDE.md` and `docs/USER_GUIDE.en.md`.
-- `build_release.ps1` builds a folder-based exe release, copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewrites language links for the release package, and creates `dist\VM-Sync-v1.3.0.zip`.
+- `build_release.ps1` builds a folder-based exe release, copies the user guides and bilingual changelogs into `dist\VM Sync`, rewrites guide language links for the release package, and creates `dist\VM-Sync-v1.3.0.zip`.
 - Local runtime config, release output, build output, caches, and probe logs are intentionally ignored by git.
 - Known open issue: window dragging can still feel less responsive than a normal native window on some machines. Do not pause timers, log updates, or polling while dragging, because that makes the app feel frozen.
 
@@ -69,6 +69,8 @@ vm-sync-tool/
   .gitignore                                      tracked
   AGENTS.md                                      tracked, local AI/maintainer context
   LICENSE                                        tracked, MIT license
+  CHANGELOG.md                                  tracked, Chinese release history
+  CHANGELOG.en.md                               tracked, English release history
   README.md                                      tracked, Chinese GitHub/developer README
   README.en.md                                   tracked, English GitHub/developer README
   docs/
@@ -104,6 +106,8 @@ vm-sync-tool/
       _internal/                                 ignored, bundled runtime/dependencies
       README.md                                  ignored, generated Chinese user guide
       README.en.md                               ignored, generated English user guide
+      CHANGELOG.md                               ignored, copied Chinese release history
+      CHANGELOG.en.md                            ignored, copied English release history
       LICENSE                                    ignored, copied MIT license
       config.example.json                        ignored, copied public config template
   vmrun_probe_result.txt                         ignored, local probe output if generated
@@ -118,6 +122,8 @@ Tracked files that belong in the source repository:
 | `.gitignore` | Excludes local config, build output, caches, probe output, and editor/OS noise |
 | `AGENTS.md` | AI/maintainer context, project rules, architecture notes, and verification commands |
 | `LICENSE` | MIT license text |
+| `CHANGELOG.md` | Chinese release history and validation summary |
+| `CHANGELOG.en.md` | English release history and validation summary |
 | `README.md` | Chinese GitHub/developer-facing project overview |
 | `README.en.md` | English GitHub/developer-facing project overview |
 | `docs/USER_GUIDE.md` | Chinese end-user guide copied to release `README.md` |
@@ -264,11 +270,13 @@ dist\VM Sync\
   _internal\
   README.md
   README.en.md
+  CHANGELOG.md
+  CHANGELOG.en.md
   LICENSE
   config.example.json
 ```
 
-- `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md`, `docs/USER_GUIDE.en.md` to release `README.en.md`, and `LICENSE` to the release folder.
+- `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md`, `docs/USER_GUIDE.en.md` to release `README.en.md`, both changelogs, and `LICENSE` to the release folder.
 - The build script rewrites guide language links from `USER_GUIDE*.md` to `README*.md` so links work inside the release package.
 - The build script also regenerates `dist\VM-Sync-v1.3.0.zip` and prints its SHA256.
 - Do not commit `dist/`, `build/`, `config.json`, `__pycache__/`, or `vmrun_probe_result.txt`.

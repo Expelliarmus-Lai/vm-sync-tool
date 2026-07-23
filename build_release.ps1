@@ -24,6 +24,8 @@ $ReadmeEn = Join-Path $ReleaseDir "README.en.md"
 Copy-Item -LiteralPath (Join-Path $Root "docs\USER_GUIDE.md") -Destination $ReadmeCn -Force
 Copy-Item -LiteralPath (Join-Path $Root "docs\USER_GUIDE.en.md") -Destination $ReadmeEn -Force
 Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $ReleaseDir "LICENSE") -Force
+Copy-Item -LiteralPath (Join-Path $Root "CHANGELOG.md") -Destination (Join-Path $ReleaseDir "CHANGELOG.md") -Force
+Copy-Item -LiteralPath (Join-Path $Root "CHANGELOG.en.md") -Destination (Join-Path $ReleaseDir "CHANGELOG.en.md") -Force
 
 $ReadmeCnText = Get-Content -LiteralPath $ReadmeCn -Raw -Encoding UTF8
 $ReadmeCnText = $ReadmeCnText.Replace("(USER_GUIDE.md)", "(README.md)").Replace("(USER_GUIDE.en.md)", "(README.en.md)")

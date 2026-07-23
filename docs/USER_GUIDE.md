@@ -37,6 +37,8 @@ VM Sync/
   _internal/
   README.md
   README.en.md
+  CHANGELOG.md
+  CHANGELOG.en.md
   LICENSE
   config.example.json
 ```

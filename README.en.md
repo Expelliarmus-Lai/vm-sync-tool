@@ -8,6 +8,8 @@ This software was written, debugged, and documented by the author with assistanc
 
 Current release: `v1.3.0`
 
+Release history: [中文更新日志](CHANGELOG.md) | [English Changelog](CHANGELOG.en.md)
+
 Typical workflow:
 
 1. Edit the Keil project source code on the local PC.
@@ -72,6 +74,8 @@ VM Sync/
   _internal/
   README.md
   README.en.md
+  CHANGELOG.md
+  CHANGELOG.en.md
   LICENSE
   config.example.json
 ```

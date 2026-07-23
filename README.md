@@ -10,6 +10,8 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在本机电脑和 VMware Wo
 
 当前发行版本：`v1.3.0`
 
+版本修改记录：[中文更新日志](CHANGELOG.md) | [English Changelog](CHANGELOG.en.md)
+
 典型流程：
 
 1. 在本机电脑编辑 Keil 工程源码。
@@ -74,6 +76,8 @@ VM Sync/
   _internal/
   README.md
   README.en.md
+  CHANGELOG.md
+  CHANGELOG.en.md
   LICENSE
   config.example.json
 ```
