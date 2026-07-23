@@ -91,7 +91,7 @@ class ConfigPanelBinHintTests(unittest.TestCase):
         panel.update_bin_path_hint(check_guest=True)
 
         text = panel.bin_resolved_label.kwargs["text"]
-        self.assertIn("VM .bin 输出文件", text)
+        self.assertIn("虚拟机 .bin 输出文件", text)
         self.assertIn("已识别 .bin", text)
         self.assertIn("ActualProject.bin", text)
         self.assertIn(r"C:\Users\h\Desktop\project\Output\RL6492\ActualProject.bin", text)
@@ -189,7 +189,7 @@ class ConfigPanelBinHintTests(unittest.TestCase):
         panel.update_bin_path_hint(check_guest=True)
 
         text = panel.bin_resolved_label.kwargs["text"]
-        self.assertIn("VM .bin 输出目录", text)
+        self.assertIn("虚拟机 .bin 输出目录", text)
         self.assertIn(r"C:\Users\h\Desktop\project\Output\RL6492", text)
         self.assertIn("请选择具体 .bin 文件", text)
 
@@ -199,7 +199,7 @@ class ConfigPanelBinHintTests(unittest.TestCase):
         panel.update_bin_path_hint()
 
         text = panel.bin_resolved_label.kwargs["text"]
-        self.assertIn("VM .bin 输出文件", text)
+        self.assertIn("虚拟机 .bin 输出文件", text)
         self.assertIn(r"C:\Users\h\Desktop\project\Output\RL6492\firmware.bin", text)
 
 

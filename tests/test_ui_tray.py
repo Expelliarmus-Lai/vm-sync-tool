@@ -2,6 +2,7 @@ import inspect
 import unittest
 from types import SimpleNamespace
 
+import ui
 from ui import App, app_icon_path, create_app_icon, create_tray_icon, tray_status_label, tray_sync_label
 
 
@@ -35,16 +36,84 @@ class TrayMenuTests(unittest.TestCase):
         self.assertTrue(app_icon_path().endswith("CustomTkinter_icon_Windows.ico"))
 
     def test_tray_sync_label_reflects_running_state(self):
-        self.assertEqual("⏸  暂停同步 (运行中)", tray_sync_label(True))
-        self.assertEqual("▶  启动同步 (已停止)", tray_sync_label(False))
-        self.assertEqual("⏸  Pause sync (running)", tray_sync_label(True, "en"))
-        self.assertEqual("▶  Start sync (stopped)", tray_sync_label(False, "en"))
+        self.assertEqual(f"{ui.TRAY_PAUSE_ICON}  暂停同步", tray_sync_label(True))
+        self.assertEqual(f"{ui.TRAY_START_ICON}  启动同步", tray_sync_label(False))
+        self.assertEqual(f"{ui.TRAY_PAUSE_ICON}  Pause sync", tray_sync_label(True, "en"))
+        self.assertEqual(f"{ui.TRAY_START_ICON}  Start sync", tray_sync_label(False, "en"))
+        self.assertEqual("⏸", ui.TRAY_PAUSE_ICON)
+        self.assertEqual("▶", ui.TRAY_START_ICON)
 
     def test_tray_status_label_reflects_running_state(self):
         self.assertEqual("状态：运行中", tray_status_label(True))
         self.assertEqual("状态：已停止", tray_status_label(False))
         self.assertEqual("Status: Running", tray_status_label(True, "en"))
+        self.assertEqual("Status: Partially running", tray_status_label(True, "en", "partial_running"))
+        self.assertEqual("Status: Partially degraded", tray_status_label(True, "en", "partial_error"))
+        self.assertEqual("Status: Sync issue", tray_status_label(True, "en", "error"))
         self.assertEqual("Status: Stopped", tray_status_label(False, "en"))
+
+    def test_tray_menu_static_labels_are_dynamic_for_language_switching(self):
+        source = inspect.getsource(App._build_tray_menu)
+
+        self.assertIn("_tray_show_label", source)
+        self.assertIn("_tray_quit_label", source)
+        self.assertNotIn('t("tray.show")', source)
+        self.assertNotIn('t("tray.quit")', source)
+
+    def test_tray_menu_emphasizes_sync_but_icon_activation_shows_window(self):
+        show_calls = []
+        sync_calls = []
+        app = SimpleNamespace(
+            _tray_status_label=lambda _item=None: "status",
+            _tray_show_label=lambda _item=None: "show",
+            _tray_show=lambda: show_calls.append("show"),
+            _tray_sync_label=lambda _item=None: "sync",
+            _tray_toggle_sync=lambda: sync_calls.append("sync"),
+            _tray_sync_checked=lambda _item=None: True,
+            _tray_quit_label=lambda _item=None: "quit",
+            _tray_quit=lambda: None,
+        )
+
+        menu = App._build_tray_menu(app)
+        menu_items = list(menu.items)
+        sync_item = menu_items[2]
+        show_item = menu_items[3]
+
+        self.assertFalse(show_item.default)
+        self.assertTrue(sync_item.default)
+        self.assertIsNone(sync_item.checked)
+        self.assertEqual("sync", sync_item.text)
+        self.assertEqual("show", show_item.text)
+
+        menu(None)
+        self.assertEqual(["show"], show_calls)
+        self.assertEqual([], sync_calls)
+
+    def test_tray_menu_keeps_native_left_padding(self):
+        ensure_source = inspect.getsource(App._ensure_tray)
+
+        self.assertNotIn("apply_tray_menu_no_check_margin_patch()", ensure_source)
+        self.assertFalse(hasattr(ui, "apply_tray_menu_no_check_margin_patch"))
+
+    def test_tray_status_label_uses_runtime_partial_state(self):
+        app = SimpleNamespace(
+            any_running=lambda: True,
+            cm=SimpleNamespace(config=SimpleNamespace(language="en")),
+            _runtime_status_state=lambda running: "partial_error",
+        )
+
+        self.assertEqual("Status: Partially degraded", App._tray_status_label(app))
+
+    def test_tray_show_and_quit_labels_follow_current_language(self):
+        app = SimpleNamespace(
+            tr=lambda key: {
+                "tray.show": "Show Window",
+                "tray.quit": "Exit",
+            }[key],
+        )
+
+        self.assertEqual("Show Window", App._tray_show_label(app))
+        self.assertEqual("Exit", App._tray_quit_label(app))
 
 
     def test_tray_quit_runs_complete_shutdown(self):
@@ -137,7 +206,7 @@ class TrayMenuTests(unittest.TestCase):
             calls,
         )
 
-    def test_unchanged_bin_event_shows_tray_notification(self):
+    def test_bin_ready_event_shows_project_in_tray_notification(self):
         notifications = []
 
         class FakeTrayIcon:
@@ -146,10 +215,26 @@ class TrayMenuTests(unittest.TestCase):
 
         app = SimpleNamespace(_tray_icon=FakeTrayIcon(), cm=SimpleNamespace(config=SimpleNamespace(language="en")))
 
-        App._on_bin_unchanged(app, "firmware.bin")
+        App._on_bin_ready(app, "firmware.bin", 1)
 
         self.assertEqual(
-            [("Firmware content unchanged, skipped overwrite: firmware.bin", "VM Sync")],
+            [("Project 2 firmware ready: firmware.bin", "VM Sync")],
+            notifications,
+        )
+
+    def test_unchanged_bin_event_shows_project_in_tray_notification(self):
+        notifications = []
+
+        class FakeTrayIcon:
+            def notify(self, message, title):
+                notifications.append((message, title))
+
+        app = SimpleNamespace(_tray_icon=FakeTrayIcon(), cm=SimpleNamespace(config=SimpleNamespace(language="en")))
+
+        App._on_bin_unchanged(app, "firmware.bin", 1)
+
+        self.assertEqual(
+            [("Project 2 firmware content unchanged, skipped overwrite: firmware.bin", "VM Sync")],
             notifications,
         )
 

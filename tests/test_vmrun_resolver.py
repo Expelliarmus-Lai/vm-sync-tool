@@ -70,6 +70,17 @@ class VmrunResolverTests(unittest.TestCase):
 
         self.assertEqual(15, run.call_args.kwargs["timeout"])
 
+    def test_list_running_vms_decodes_utf8_chinese_errors(self):
+        expected = "虚拟机未运行"
+        with patch(
+            "vmrun_resolver.subprocess.run",
+            return_value=Completed(stderr=expected.encode("utf-8"), returncode=1),
+        ) as run:
+            result = list_running_vms(r"C:\VMware\vmrun.exe")
+
+        self.assertEqual(expected, result.error)
+        self.assertNotIn("text", run.call_args.kwargs)
+
     def test_normalize_vmx_path_uses_absolute_casefolded_path(self):
         self.assertEqual(
             normalize_vmx_path(r"C:\VMs\A\..\A\Machine.vmx"),

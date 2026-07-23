@@ -3,10 +3,48 @@
   "vmx_path": "",
   "vm_guest_user": "",
   "vm_guest_password": "",
-  "host_project_path": "",
-  "vm_project_path": "",
-  "vm_bin_relative_path": "",
-  "host_output_path": "",
+  "projects": [
+    {
+      "enabled": true,
+      "host_project_path": "",
+      "vm_project_path": "",
+      "vm_bin_relative_path": "",
+      "host_output_path": ""
+    },
+    {
+      "enabled": false,
+      "host_project_path": "",
+      "vm_project_path": "",
+      "vm_bin_relative_path": "",
+      "host_output_path": ""
+    }
+  ],
+  "active_profile_id": "00000000-0000-0000-0000-000000000001",
+  "profiles": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "默认配置",
+      "vmx_path": "",
+      "vm_guest_user": "",
+      "vm_guest_password": "",
+      "projects": [
+        {
+          "enabled": true,
+          "host_project_path": "",
+          "vm_project_path": "",
+          "vm_bin_relative_path": "",
+          "host_output_path": ""
+        },
+        {
+          "enabled": false,
+          "host_project_path": "",
+          "vm_project_path": "",
+          "vm_bin_relative_path": "",
+          "host_output_path": ""
+        }
+      ]
+    }
+  ],
   "language": "",
   "debounce_ms": 500,
   "poll_interval_sec": 1,

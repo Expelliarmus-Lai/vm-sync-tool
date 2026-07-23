@@ -13,6 +13,9 @@ dist/
 
 # Local runtime configuration and machine-specific probe output
 config.json
+config.json.bak
+config.json.corrupt
+.config.json.*.tmp
 vmrun_probe_result.txt
 __vm_sync_probe_*.txt
 __vm_sync_probe_back.txt

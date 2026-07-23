@@ -27,6 +27,10 @@ class I18nTests(unittest.TestCase):
         self.assertEqual("将同步 3 个文件", zh.tr("preflight.action.full", count=3))
         self.assertEqual("Will sync 3 files", en.tr("preflight.action.full", count=3))
 
+    def test_preflight_warning_log_is_single_line(self):
+        self.assertNotIn("\n", Translator("zh").tr("ui.preflight.warning", message="warn"))
+        self.assertNotIn("\n", Translator("en").tr("ui.preflight.warning", message="warn"))
+
     def test_invalid_language_normalizes_to_empty_for_auto_detection(self):
         self.assertEqual("", normalize_language("fr"))
         self.assertEqual("en", normalize_language("EN"))

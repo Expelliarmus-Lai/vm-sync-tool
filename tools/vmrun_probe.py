@@ -10,6 +10,12 @@ from pathlib import Path
 
 CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from vmrun_output import decode_vmrun_result
+
+
 LOG = ROOT / "vmrun_probe_result.txt"
 GUEST_CMD = r"C:\Windows\System32\cmd.exe"
 GUEST_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -43,10 +49,10 @@ def run(label: str, args: list[str], timeout: int = 30):
         result = subprocess.run(
             args,
             capture_output=True,
-            text=True,
             timeout=timeout,
             creationflags=CREATE_FLAGS,
         )
+        result = decode_vmrun_result(result)
     except subprocess.TimeoutExpired:
         write(f"TIMEOUT: {timeout}s")
         write()

@@ -1,11 +1,13 @@
-"""VM Sync Tool — Entry point.
+﻿"""VM Sync Tool entry point.
 
-Syncs source files from host to VMware VM for Keil compilation,
-pulls compiled .bin back to host, via vmrun.exe (no network required).
+Syncs source files from the local PC to a VMware virtual machine for Keil
+compilation, then pulls the compiled .bin back to the local PC via vmrun.exe.
 
 Usage:
     python main.py
 """
+
+from __future__ import annotations
 
 import sys
 import os
@@ -40,7 +42,7 @@ def check_single_instance() -> bool:
     global _lock_sock
     try:
         _lock_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # DO NOT set SO_REUSEADDR — on Windows it permits multiple binds to the same port
+        # DO NOT set SO_REUSEADDR 鈥?on Windows it permits multiple binds to the same port
         _lock_sock.bind(("127.0.0.1", _LOCK_PORT))
         _lock_sock.listen(1)
         return True
@@ -87,8 +89,11 @@ def main():
         cfg.vmrun_path = detected_vmrun
         config_manager.save()
 
-    sync_manager = SyncManager(config_manager)
-    app = App(config_manager, sync_manager)
+    sync_managers = [
+        SyncManager(config_manager, project_index=0),
+        SyncManager(config_manager, project_index=1),
+    ]
+    app = App(config_manager, sync_managers)
     app.attach_single_instance_socket(_lock_sock)
     app.run()
 

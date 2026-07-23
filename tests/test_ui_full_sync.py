@@ -3,8 +3,9 @@ import tkinter as tk
 import unittest
 from types import SimpleNamespace
 
+import ui
 from i18n import Translator
-from ui import App, AutoScrollFrame, ConfigPanel, ControlPanel, DARK, LIGHT
+from ui import App, AutoScrollFrame, ConfigPanel, ControlPanel, DARK, LIGHT, SAVE_CHECK_BUTTON_WIDTH
 
 
 class FullSyncUiTests(unittest.TestCase):
@@ -37,13 +38,13 @@ class FullSyncUiTests(unittest.TestCase):
     def test_config_placeholders_are_short_and_specific(self):
         zh = Translator("zh")
 
-        self.assertEqual("当前运行 VM 的 .vmx", zh.tr("ui.config.placeholder.vmx"))
-        self.assertEqual("VM Windows 登录用户名", zh.tr("ui.config.placeholder.vm_user"))
-        self.assertEqual("VM Windows 登录密码", zh.tr("ui.config.placeholder.vm_password"))
-        self.assertEqual("宿主机 Keil 工程根目录", zh.tr("ui.config.placeholder.host_project"))
-        self.assertEqual(r"VM 内工程根目录，如 C:\project", zh.tr("ui.config.placeholder.vm_project"))
-        self.assertEqual(r"相对 VM 工程，如 Output\RL6492", zh.tr("ui.config.placeholder.bin"))
-        self.assertEqual("宿主机固件回传目录", zh.tr("ui.config.placeholder.host_output"))
+        self.assertEqual("当前运行虚拟机的 .vmx", zh.tr("ui.config.placeholder.vmx"))
+        self.assertEqual("虚拟机 Windows 登录用户名", zh.tr("ui.config.placeholder.vm_user"))
+        self.assertEqual("虚拟机 Windows 登录密码", zh.tr("ui.config.placeholder.vm_password"))
+        self.assertEqual("本机 Keil 工程根目录", zh.tr("ui.config.placeholder.host_project"))
+        self.assertEqual(r"虚拟机内工程根目录，如 C:\project", zh.tr("ui.config.placeholder.vm_project"))
+        self.assertEqual(r"相对虚拟机工程，如 Output\RL6492", zh.tr("ui.config.placeholder.bin"))
+        self.assertEqual("本机固件回传目录", zh.tr("ui.config.placeholder.host_output"))
 
     def test_config_panel_refreshes_empty_placeholders_after_build(self):
         source = inspect.getsource(ConfigPanel._build)
@@ -187,8 +188,33 @@ class FullSyncUiTests(unittest.TestCase):
         self.assertIn('"check",\n            18', source)
         self.assertIn('"upload",\n            18', source)
 
+    def test_save_check_button_has_comfortable_text_padding(self):
+        source = inspect.getsource(ConfigPanel._build)
+
+        self.assertIn("SAVE_CHECK_BUTTON_WIDTH", source)
+        self.assertIn("FULL_SYNC_BUTTON_WIDTH", source)
+        self.assertIn("CONFIG_ACTION_BUTTON_HEIGHT", source)
+        self.assertIn("ACTION_BUTTON_BORDER_SPACING", source)
+        self.assertEqual(SAVE_CHECK_BUTTON_WIDTH, ui.FULL_SYNC_BUTTON_WIDTH)
+        self.assertEqual(144, ui.SAVE_CHECK_BUTTON_WIDTH)
+        self.assertEqual(32, ui.CONFIG_ACTION_BUTTON_HEIGHT)
+
+    def test_controls_use_consistent_corner_radii(self):
+        source = "\n".join(
+            [
+                inspect.getsource(ConfigPanel),
+                inspect.getsource(ui.SharedVmPanel),
+                inspect.getsource(ui.ProjectPane),
+                inspect.getsource(App._build_ui),
+            ]
+        )
+
+        self.assertNotIn("corner_radius=7", source)
+        self.assertIn("CARD_CORNER_RADIUS", source)
+        self.assertIn("CONTROL_CORNER_RADIUS", source)
+
     def test_save_check_status_uses_log_icons_only_in_config_hint(self):
-        save_source = inspect.getsource(ConfigPanel.save_and_check)
+        save_source = inspect.getsource(ConfigPanel.apply_preflight_report)
         control_source = inspect.getsource(ControlPanel)
 
         for icon_name in ("WARNING", "SUCCESS", "ERROR"):
@@ -201,8 +227,10 @@ class FullSyncUiTests(unittest.TestCase):
     def test_main_window_starts_large_and_has_no_small_max_size_cap(self):
         source = inspect.getsource(App.__init__)
 
-        self.assertIn('geometry("760x860")', source)
-        self.assertIn("minsize(680, 720)", source)
+        self.assertIn("SINGLE_PROJECT_GEOMETRY", source)
+        self.assertIn("SINGLE_PROJECT_MIN_SIZE", source)
+        self.assertNotIn('geometry("760x860")', source)
+        self.assertNotIn("minsize(680, 720)", source)
         self.assertNotIn("maxsize(900, 780)", source)
 
     def test_polling_and_stats_avoid_unnecessary_repaints(self):
@@ -224,7 +252,7 @@ class FullSyncUiTests(unittest.TestCase):
         self.assertIn("_is_wheel_excluded", frame_source)
         self.assertIn("bind_all", frame_source)
         self.assertNotIn("unbind_all", frame_source)
-        self.assertIn("add_wheel_exclusion(self.log_panel.textbox)", build_source)
+        self.assertIn("add_wheel_exclusion(panel.log_panel.textbox)", build_source)
 
     def test_outer_scroll_does_not_force_layout_during_configure(self):
         source = inspect.getsource(AutoScrollFrame)
@@ -241,9 +269,11 @@ class FullSyncUiTests(unittest.TestCase):
 
         self.assertIn("set_config_enabled(False)", full_sync_source)
         self.assertIn("control.set_full_sync_active(True)", full_sync_source)
+        self.assertIn("_set_project_toggle_enabled(False)", full_sync_source)
         self.assertIn("_finish_full_sync", worker_source)
         self.assertIn("control.set_full_sync_active(False)", finish_source)
         self.assertIn("set_config_enabled(enabled)", finish_source)
+        self.assertIn("_set_project_toggle_enabled(enabled)", finish_source)
 
     def test_finish_full_sync_ignores_tcl_error_after_shutdown(self):
         panel = object.__new__(ConfigPanel)

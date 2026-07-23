@@ -36,6 +36,14 @@ class LogPanelColorTests(unittest.TestCase):
         self.assertNotIn("▤  同步日志", source)
         self.assertNotIn("📋  同步日志", source)
 
+    def test_log_textbox_wraps_by_character_for_mixed_language_lines(self):
+        import inspect
+
+        source = inspect.getsource(LogPanel)
+
+        self.assertIn('wrap="char"', source)
+        self.assertNotIn('wrap="word"', source)
+
     def test_each_log_level_uses_independent_message_tag(self):
         panel = object.__new__(LogPanel)
         panel.textbox = FakeTextbox()
@@ -53,6 +61,17 @@ class LogPanelColorTests(unittest.TestCase):
 
         self.assertEqual(["msg_success", "msg_error", "msg_warning"], message_tags)
         self.assertNotIn("msg_tag", panel.textbox.tags)
+
+    def test_log_line_spacing_is_consistent(self):
+        panel = object.__new__(LogPanel)
+        panel.textbox = FakeTextbox()
+        panel._line_count = 0
+
+        panel.append(LogEvent(LogIcon.CHECK, "checking", "info"))
+
+        self.assertEqual(2, len(panel.textbox.inserts))
+        self.assertRegex(panel.textbox.inserts[0][1], r"^\d{2}:\d{2}:\d{2}  $")
+        self.assertEqual(f"{LogIcon.CHECK} checking\n", panel.textbox.inserts[1][1])
 
 
 if __name__ == "__main__":

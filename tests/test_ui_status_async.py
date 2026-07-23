@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from i18n import Translator
 from ui import App
 
 
@@ -44,7 +45,7 @@ class StatusCheckTests(unittest.TestCase):
         )
         app.status_bar = SimpleNamespace(
             vmrun_label=FakeLabel("vmrun 就绪"),
-            vm_label=FakeLabel("● VM 运行中"),
+            vm_label=FakeLabel("● 虚拟机运行中"),
             poll_label=FakeLabel(""),
         )
         app.resolve_vmrun_path = lambda save=False: r"C:\VMware\vmrun.exe"
@@ -60,6 +61,62 @@ class StatusCheckTests(unittest.TestCase):
         ]
         self.assertNotIn("vmrun 检查中...", vmrun_texts)
         self.assertEqual("vmrun 就绪", app.status_bar.vmrun_label.text)
+
+    def test_bin_return_status_lists_each_enabled_project_time(self):
+        app = object.__new__(App)
+        app.cm = SimpleNamespace(
+            config=SimpleNamespace(
+                language="zh",
+                projects=[
+                    SimpleNamespace(enabled=True),
+                    SimpleNamespace(enabled=True),
+                ],
+            )
+        )
+        app._latest_bin_return_times = {0: 1717215306.0}
+
+        text = App._format_bin_return_status(app, bin_ready=False)
+
+        self.assertIn(".bin", text)
+        self.assertIn("项目 1", text)
+        self.assertIn("12:15:06", text)
+        self.assertIn("项目 2 未回传", text)
+        self.assertIn("  |  ", text)
+
+    def test_single_project_bin_return_status_stays_compact(self):
+        app = object.__new__(App)
+        app.cm = SimpleNamespace(
+            config=SimpleNamespace(
+                language="en",
+                projects=[SimpleNamespace(enabled=True)],
+            )
+        )
+        app._latest_bin_return_times = {0: 1717215306.0}
+
+        text = App._format_bin_return_status(app, bin_ready=True)
+
+        self.assertIn(Translator("en").tr("ui.bin.ready"), text)
+        self.assertIn("Latest 06-01 12:15:06", text)
+        self.assertNotIn("Project 1", text)
+
+    def test_bin_ready_records_returned_at_and_accepts_legacy_mtime(self):
+        app = object.__new__(App)
+        app._tray_icon = None
+        app._latest_bin_return_times = {}
+
+        App._on_bin_ready(
+            app,
+            {"filename": "firmware.bin", "returned_at": 1753243200.0},
+            1,
+        )
+        App._on_bin_ready(
+            app,
+            {"filename": "legacy.bin", "local_mtime": 1753243300.0},
+            0,
+        )
+
+        self.assertEqual(1753243200.0, app._latest_bin_return_times[1])
+        self.assertEqual(1753243300.0, app._latest_bin_return_times[0])
 
 
 if __name__ == "__main__":

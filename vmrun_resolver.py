@@ -7,6 +7,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from vmrun_output import decode_vmrun_result
+
 
 DEFAULT_VMRUN_PATHS = [
     r"C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe",
@@ -54,10 +56,10 @@ def list_running_vms(vmrun_path: str, timeout: int = 5) -> RunningVmsResult:
         result = subprocess.run(
             [vmrun_path, "list"],
             capture_output=True,
-            text=True,
             timeout=timeout,
             creationflags=_CREATE_FLAGS,
         )
+        result = decode_vmrun_result(result)
     except subprocess.TimeoutExpired:
         return RunningVmsResult(False, [], f"vmrun list 超时 ({timeout}s)")
     except Exception as e:

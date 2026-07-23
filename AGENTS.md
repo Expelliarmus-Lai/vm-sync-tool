@@ -2,38 +2,51 @@
 
 ## Overview
 
-Windows desktop GUI tool that keeps a Keil firmware project synchronized between the host machine and a VMware Workstation VM. It uses `vmrun.exe` through VMware Tools / VIX, so it does not require network access and the VM NIC can remain disabled.
+Windows desktop GUI tool that keeps a Keil firmware project synchronized between the local PC and a VMware Workstation virtual machine. It uses `vmrun.exe` through VMware Tools / VIX, so it does not require network access and the virtual machine NIC can remain disabled.
 
 The intended workflow is:
 
-1. Edit source files on the host.
-2. Sync the project into the VM.
-3. Build manually in Keil inside the VM.
-4. Pull the generated `.bin` back to a host output directory.
+1. Edit source files on the local PC.
+2. Sync the project into the virtual machine.
+3. Build manually in Keil inside the virtual machine.
+4. Pull the generated `.bin` back to a local PC output directory.
 
 ## Current Status
 
 - `vmrun.exe` auto-detection is implemented and persisted in `config.json`.
-- VMX preflight verifies that the configured VMX is the VM currently listed by `vmrun list`.
-- Host-to-VM incremental sync is implemented with watchdog and a 500 ms debounce.
-- Host-to-VM incremental sync copies into a VM-side temp file in the target directory, then moves it over the destination to avoid direct half-writes to the final file.
-- Full sync is implemented as zip upload plus guest-side PowerShell extraction into a VM temp directory, followed by `Copy-Item -Recurse -Force` into the project directory.
-- Full sync does not fall back to slow per-file copy. If zip upload/extract/cover fails, it reports the error, stops, and attempts to clean VM temp files/directories.
+- VMX preflight verifies that the configured VMX is the virtual machine currently listed by `vmrun list`.
+- Configuration is now shared virtual machine settings plus a `projects` list. VMX, virtual machine username, and virtual machine password are shared; each project owns `enabled`, Local PC project path, virtual machine project path, `.bin` relative path, and firmware return directory.
+- Named synchronization profiles are persisted in `config.json`. Each profile has a stable UUID, Unicode name, shared VMX/guest credentials, and both project slots. Selection loads immediately from a custom profile toolbar; save/delete remain in that toolbar, Rename is launched from the dropdown and edited in place in the main toolbar, and new-profile name/source selection uses a compact modal. Legacy configs migrate into a default profile.
+- Configuration writes use a same-directory temporary file and atomic replacement. The previous valid file is kept as `config.json.bak`; if the main file is damaged, it is preserved as `config.json.corrupt` and the backup is restored when possible. These files can contain plaintext credentials and must remain ignored by git.
+- Legacy single-project configs are migrated into project 1 automatically. When legacy project fields and `projects` coexist, `projects` wins, and saves write the new structure.
+- The UI supports up to two project panes in this release. Project 2 is enabled with `添加同步项目`; disabling project 2 hides its pane and shrinks the window back to the single-project layout.
+- Project 1 and project 2 have independent start/pause, save/check, full sync/cancel, logs, `.bin` hints, watchdog state, upload queues, hash baselines, `.bin` baselines, and return directories.
+- The top start button is atomic across enabled projects: if any enabled project fails preflight, no project starts, and projects that passed log that they are waiting for the failing project to be fixed.
+- Local-PC-to-virtual-machine incremental sync is implemented with watchdog and a 500 ms debounce.
+- Local-PC-to-virtual-machine incremental sync copies into a virtual-machine-side temp file in the target directory, then moves it over the destination to avoid direct half-writes to the final file.
+- Full sync is implemented as zip upload plus guest-side PowerShell extraction into a virtual machine temp directory, followed by `Copy-Item -Recurse -Force` into the project directory.
+- Full sync packages project files except directories named `Output` and preserves empty directories in the archive.
+- Full sync does not fall back to slow per-file copy. If zip upload/extract/cover fails, it reports the error, stops, and attempts to clean virtual machine temp files/directories.
 - Full sync has cooperative cancellation. The UI disables config/start, changes the full-sync button to cancel, and cancellation waits for the current `vmrun` operation before cleanup.
-- VM-to-host `.bin` return is implemented and has been confirmed to transfer a file from the running VM.
+- Virtual-machine-to-local-PC `.bin` return is implemented and has been confirmed to transfer a file from the running virtual machine.
 - `.bin` polling defaults to 1 second. Old configs with `poll_interval_sec = 3` are upgraded to `1`.
 - Runtime UI language supports Chinese and English. Old configs without `language` are initialized from Windows UI language APIs first, then Python locale fallback; manual switching saves `zh` or `en` to `config.json`.
-- After sync starts, the first `.bin` poll records the current VM `.bin` as a startup baseline and does not copy it back immediately.
-- Start from the UI saves the current entry values, runs save/check preflight, then reuses that result only if the saved preflight config snapshot still matches the current config. This avoids repeating slow VM checks before the first baseline poll without allowing stale UI/config values to bypass validation.
+- After sync starts, the first `.bin` poll records the current virtual machine `.bin` as a startup baseline and does not copy it back immediately.
+- Start from the UI saves the current entry values, runs save/check preflight, then reuses that result only if the saved preflight config snapshot still matches the current config. This avoids repeating slow virtual machine checks before the first baseline poll without allowing stale UI/config values to bypass validation.
+- Start records a startup watch window before building the local PC hash baseline; source files detected as modified during that baseline pass are enqueued after the observer starts.
 - After the startup baseline is recorded, the first timestamp-only update of that same `.bin` is copied back once even if the content hash is unchanged. This covers users who accidentally compiled before start, then immediately rebuild after start with identical output.
 - Start runs the same save/check flow as `保存并检测` before the sync worker is launched. If preflight or `.bin` target validation fails, sync does not start.
 - Saving from the UI logs that paths have been saved to `config.json`, including the resolved config file path.
-- `.bin` is copied back only when content hash changes. If the timestamp changes but content is identical, the app logs a skipped update once for that file state and sends the same readiness-style host/tray notification.
-- Stop requests suppress late `.bin` poller logs, skip notifications, and guest-to-host copies after the service has been stopped.
-- The UI currently starts at `760x860`, has minimum size `680x720`, and has no maximum-size cap.
+- `.bin` is copied back only when content hash changes. If the timestamp changes but content is identical, the app logs a skipped update once for that file state and sends the same readiness-style local PC/tray notification.
+- Stop requests suppress late `.bin` poller logs, skip notifications, and guest-to-local-PC copies after the service has been stopped.
+- Stale run-token checks suppress late incremental moves, `.bin` local PC overwrites, `.bin` logs/notifications, and stale readiness state after a project is paused or restarted.
+- Incremental upload timeout suspends only the affected project's incremental queue and surfaces `部分异常` / `Partially degraded` in the top status when applicable.
+- Sync-engine `vmrun` output is captured as bytes and decoded as guest UTF-8 first, then the Windows host code page/GB18030, so Chinese guest errors remain readable without allowing invalid VMware bytes to crash reader threads.
+- The UI currently starts at `700x955`, has minimum size `640x720`, widens to `1180x955` with minimum size `1040x740` when project 2 is enabled, and has no maximum-size cap.
+- The tray menu is bilingual/dynamic: status, show, start/pause, and quit labels update after language switching and can show running, partially running, or partially degraded state. The start/pause menu item is bold/default in the menu, while tray icon activation itself restores the window instead of toggling sync.
 - The source repository has bilingual project documentation: Chinese `README.md` and English `README.en.md`.
 - The release user guide is also bilingual: `docs/USER_GUIDE.md` and `docs/USER_GUIDE.en.md`.
-- `build_release.ps1` builds a folder-based exe release, copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewrites language links for the release package, and creates `dist\VM-Sync-v1.1.0.zip`.
+- `build_release.ps1` builds a folder-based exe release, copies the user guides and bilingual changelogs into `dist\VM Sync`, rewrites guide language links for the release package, and creates `dist\VM-Sync-v1.3.0.zip`.
 - Local runtime config, release output, build output, caches, and probe logs are intentionally ignored by git.
 - Known open issue: window dragging can still feel less responsive than a normal native window on some machines. Do not pause timers, log updates, or polling while dragging, because that makes the app feel frozen.
 
@@ -42,7 +55,7 @@ The intended workflow is:
 - **Language:** Python 3.12+
 - **UI:** CustomTkinter native desktop window plus pystray system tray
 - **File watch:** watchdog
-- **VM communication:** `subprocess.run(...)` calling `vmrun.exe`
+- **Virtual machine communication:** `subprocess.run(...)` calling `vmrun.exe`
 - **Full sync packaging:** Python `zipfile`, then guest PowerShell `Expand-Archive`
 
 ## Repository Layout
@@ -56,6 +69,8 @@ vm-sync-tool/
   .gitignore                                      tracked
   AGENTS.md                                      tracked, local AI/maintainer context
   LICENSE                                        tracked, MIT license
+  CHANGELOG.md                                  tracked, Chinese release history
+  CHANGELOG.en.md                               tracked, English release history
   README.md                                      tracked, Chinese GitHub/developer README
   README.en.md                                   tracked, English GitHub/developer README
   docs/
@@ -66,8 +81,9 @@ vm-sync-tool/
   syncer.py                                      tracked, sync engine and vmrun operations
   config_manager.py                              tracked, config model and persistence
   i18n.py                                        tracked, Chinese/English runtime translations
-  preflight.py                                   tracked, path/VM/bin validation
-  vmrun_resolver.py                              tracked, vmrun and running VM detection
+  preflight.py                                   tracked, path/virtual-machine/bin validation
+  vmrun_resolver.py                              tracked, vmrun and running virtual machine detection
+  vmrun_output.py                                tracked, shared byte-output decoding for vmrun/guest PowerShell
   tools/
     vmrun_probe.py                               tracked, local vmrun diagnostic helper
   tests/                                         tracked, unit/regression tests
@@ -84,12 +100,14 @@ vm-sync-tool/
   VM Sync.spec                                   tracked, PyInstaller spec
   build/                                         ignored, PyInstaller intermediate output
   dist/
-    VM-Sync-v1.1.0.zip                          ignored, generated release archive
+    VM-Sync-v1.3.0.zip                          ignored, generated release archive
     VM Sync/                                     ignored, generated folder-based release
       VM Sync.exe                                ignored, generated executable
       _internal/                                 ignored, bundled runtime/dependencies
       README.md                                  ignored, generated Chinese user guide
       README.en.md                               ignored, generated English user guide
+      CHANGELOG.md                               ignored, copied Chinese release history
+      CHANGELOG.en.md                            ignored, copied English release history
       LICENSE                                    ignored, copied MIT license
       config.example.json                        ignored, copied public config template
   vmrun_probe_result.txt                         ignored, local probe output if generated
@@ -104,6 +122,8 @@ Tracked files that belong in the source repository:
 | `.gitignore` | Excludes local config, build output, caches, probe output, and editor/OS noise |
 | `AGENTS.md` | AI/maintainer context, project rules, architecture notes, and verification commands |
 | `LICENSE` | MIT license text |
+| `CHANGELOG.md` | Chinese release history and validation summary |
+| `CHANGELOG.en.md` | English release history and validation summary |
 | `README.md` | Chinese GitHub/developer-facing project overview |
 | `README.en.md` | English GitHub/developer-facing project overview |
 | `docs/USER_GUIDE.md` | Chinese end-user guide copied to release `README.md` |
@@ -113,8 +133,9 @@ Tracked files that belong in the source repository:
 | `syncer.py` | `SyncManager`: watchdog observer, debouncer, vmrun calls, full sync, `.bin` polling/return |
 | `config_manager.py` | `ConfigManager` and `Config`: load/save `config.json`, normalize paths/defaults |
 | `i18n.py` | Runtime Chinese/English translations and system-language detection |
-| `preflight.py` | Path, VM, vmrun, running-VM, Keil project, and `.bin` configuration checks |
+| `preflight.py` | Path, virtual machine, vmrun, running virtual machine, Keil project, and `.bin` configuration checks |
 | `vmrun_resolver.py` | `vmrun.exe` candidate resolution, `vmrun list`, VMX path normalization |
+| `vmrun_output.py` | Shared decoding for byte output returned by VMware and guest PowerShell commands |
 | `tools/vmrun_probe.py` | One-shot diagnostic script for testing `vmrun` connectivity |
 | `tests/` | Unit/regression tests for config, preflight, vmrun resolver, sync logic, and UI behavior |
 | `packaging_hooks/pre_find_module_path/hook-tkinter.py` | PyInstaller pre-find hook for Tcl/Tk packaging compatibility |
@@ -141,14 +162,17 @@ tests/
   test_ui_start_async.py
   test_ui_status_async.py
   test_ui_tray.py
+  test_ui_multi_project.py
+  test_ui_profiles.py
   test_vmrun_resolver.py
+  test_vmrun_output.py
 ```
 
 Local/generated files that should remain untracked:
 
 | Path | Purpose |
 |------|---------|
-| `config.json` | Local user configuration persisted by the app; may contain real paths, username, and password. Local AI may inspect it for debugging, but must not commit or expose secrets. |
+| `config.json`, `config.json.bak`, `config.json.corrupt` | Local user configuration, last valid backup, and preserved damaged input. Any of them may contain real paths, username, and password. Local AI may inspect them for debugging, but must not commit or expose secrets. |
 | `dist/` | Release output generated by `build_release.ps1`, including `dist\VM Sync\` and the generated release zip; use it to test the packaged app locally, but regenerate instead of editing contents by hand. |
 | `build/` | PyInstaller intermediate build output; disposable and regenerated by packaging. |
 | `__pycache__/` and `*.pyc` | Python bytecode caches |
@@ -163,57 +187,68 @@ Local/generated files that should remain untracked:
 | Key | Meaning |
 |-----|---------|
 | `vmrun_path` | Resolved `vmrun.exe` path. Auto-detected from config, common VMware paths, then PATH. |
-| `vmx_path` | VMware `.vmx` file for the target VM. Must match a currently running VM from `vmrun list`. |
-| `vm_guest_user` | Windows username inside the VM for `vmrun -gu`. |
-| `vm_guest_password` | VM user password for `vmrun -gp`. Blank passwords are blocked because they can trigger VIX crashes/popups. |
-| `host_project_path` | Host-side project root. |
-| `vm_project_path` | VM-side project root. Full sync extracts here and incremental sync writes under this root. |
-| `vm_bin_relative_path` | `.bin` path relative to `vm_project_path`. May be an exact `.bin` file or a directory to scan. The UI converts absolute paths under `vm_project_path` into relative paths before saving; absolute paths outside `vm_project_path` remain invalid. |
-| `host_output_path` | Host directory where the returned `.bin` is written. Created on start if missing. |
+| `vmx_path` | VMware `.vmx` file for the target virtual machine. Must match a currently running virtual machine from `vmrun list`. |
+| `vm_guest_user` | Windows username inside the virtual machine for `vmrun -gu`. |
+| `vm_guest_password` | Virtual machine user password for `vmrun -gp`. Blank passwords are blocked because they can trigger VIX crashes/popups. |
+| `projects` | List of project configs. This release's UI supports project 1 and project 2, but the file format is list-based for future expansion. |
+| `projects[].enabled` | Whether the project participates in top start/preflight and is visible in the UI. Project 1 is always ensured enabled; project 2 defaults disabled. |
+| `projects[].host_project_path` | Local PC project root for this project. |
+| `projects[].vm_project_path` | Virtual-machine-side project root for this project. Full sync extracts here and incremental sync writes under this root. |
+| `projects[].vm_bin_relative_path` | `.bin` path relative to this project's `vm_project_path`. May be an exact `.bin` file or a directory to scan. The UI converts absolute paths under `vm_project_path` into relative paths before saving; absolute paths outside `vm_project_path` remain invalid. |
+| `projects[].host_output_path` | Local PC directory where this project's returned `.bin` is written. Created on start if missing. |
+| `active_profile_id` | Stable UUID of the currently loaded named synchronization profile. |
+| `profiles` | Persisted named synchronization profile records. The top-level VM and `projects` fields mirror the active profile for compatibility. |
+| `profiles[].id` | Stable UUID used for loading and renaming without depending on the display name. |
+| `profiles[].name` | User-visible Unicode name; blank and case-insensitive duplicate names are rejected. |
+| `profiles[].vmx_path` / `vm_guest_user` / `vm_guest_password` | Shared virtual machine settings stored for this profile. |
+| `profiles[].projects` | This profile's two project slots using the same project field shape as top-level `projects`. |
 | `language` | Runtime UI/log language. `zh` and `en` are supported; missing, blank, or invalid values are initialized from Windows UI language APIs first, then Python locale fallback. |
-| `debounce_ms` | Host file-change debounce, currently `500`. |
-| `poll_interval_sec` | VM `.bin` poll interval, currently `1`. |
-| `watch_extensions` | Incremental host-to-VM extensions. Includes modern and legacy Keil files. |
+| `debounce_ms` | Local PC file-change debounce, currently `500`. |
+| `poll_interval_sec` | Virtual machine `.bin` poll interval, currently `1`. |
+| `watch_extensions` | Incremental local-PC-to-virtual-machine extensions. Includes modern and legacy Keil files. |
 
-Path values are normalized to Windows backslashes when saved.
+Legacy top-level `host_project_path`, `vm_project_path`, `vm_bin_relative_path`, and `host_output_path` are read only for migration when `projects` is absent. Path values are normalized to Windows backslashes when saved.
 
 ## Architecture
 
 ```text
 Startup
   -> load config
+  -> migrate legacy single-project fields into projects[0] when needed
   -> normalize paths and runtime defaults
   -> resolve vmrun.exe
   -> verify vmrun list and running VMX during preflight
 
-Host edit
-  -> Start button saves config and runs save/check preflight first
-  -> watchdog
-  -> debounce(500 ms)
-  -> vmrun CopyFileFromHostToGuest to a temp file in the VM destination directory
-  -> guest PowerShell Move-Item -Force to the final VM path
-  -> VM project directory
+Local PC edit
+  -> per-project Start button saves shared virtual machine + project config and runs save/check preflight first
+  -> per-project watchdog
+  -> per-project debounce(500 ms)
+  -> per-project upload queue and local file hash baseline
+  -> source files changed during the startup baseline pass are rechecked and enqueued after the observer starts
+  -> vmrun CopyFileFromHostToGuest to a temp file in this project's virtual machine destination directory
+  -> guest PowerShell Move-Item -Force to this project's final virtual machine path
+  -> this project's virtual machine project directory
 
 Full sync button
   -> save and preflight
-  -> zip the full host project
+  -> zip this project's local PC project excluding `Output` directories
   -> disable config/start and turn the full-sync button into cancel
-  -> vmrun CopyFileFromHostToGuest to a VM temp zip
-  -> run guest PowerShell Expand-Archive -Force into a VM temp directory
+  -> vmrun CopyFileFromHostToGuest to a virtual machine temp zip
+  -> run guest PowerShell Expand-Archive -Force into a virtual machine temp directory
   -> cancellation checkpoints between zip/upload/extract/cover
-  -> run guest PowerShell Copy-Item -Recurse -Force into the VM project path
+  -> run guest PowerShell Get-ChildItem -Force plus Copy-Item -Recurse -Force into this project's virtual machine project path
   -> delete guest temp zip/temp extract directory
 
-Keil build in VM
-  -> service starts quickly and the first poll records existing VM .bin as a baseline
+Keil build in virtual machine
+  -> each project service starts quickly and the first poll records that project's existing virtual machine .bin as a baseline
   -> users should start sync before building in Keil; a build made before start is treated as baseline and is not returned immediately
-  -> app polls configured VM .bin every 1 second
+  -> each project polls its configured virtual machine .bin every 1 second
   -> read LastWriteTimeUtc ticks, length, SHA256
-  -> vmrun CopyFileFromGuestToHost only when content changes after startup
+  -> vmrun CopyFileFromGuestToHost only when this project's content changes after startup
   -> the first post-baseline timestamp-only update is copied back once even if content is identical
-  -> timestamp-only/content-identical changes log once and notify the host/tray
-  -> stop requests prevent late poller logs, notifications, and copies
-  -> host output directory
+  -> timestamp-only/content-identical changes log once and notify the local PC/tray
+  -> stop requests and stale tokens prevent late poller logs, notifications, and copies
+  -> this project's local PC output directory
 ```
 
 ## Documentation and Release Packaging
@@ -229,65 +264,70 @@ Keil build in VM
 - Release package layout after `build_release.ps1`:
 
 ```text
-dist\VM-Sync-v1.1.0.zip
+dist\VM-Sync-v1.3.0.zip
 dist\VM Sync\
   VM Sync.exe
   _internal\
   README.md
   README.en.md
+  CHANGELOG.md
+  CHANGELOG.en.md
   LICENSE
   config.example.json
 ```
 
-- `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md`, `docs/USER_GUIDE.en.md` to release `README.en.md`, and `LICENSE` to the release folder.
+- `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md`, `docs/USER_GUIDE.en.md` to release `README.en.md`, both changelogs, and `LICENSE` to the release folder.
 - The build script rewrites guide language links from `USER_GUIDE*.md` to `README*.md` so links work inside the release package.
-- The build script also regenerates `dist\VM-Sync-v1.1.0.zip` and prints its SHA256.
+- The build script also regenerates `dist\VM-Sync-v1.3.0.zip` and prints its SHA256.
 - Do not commit `dist/`, `build/`, `config.json`, `__pycache__/`, or `vmrun_probe_result.txt`.
 - `config.example.json` stays tracked because it is safe to share and documents the public config shape.
 
 ## Full Sync Behavior
 
 - UI button label is `全量同步`.
-- While full sync is running, config inputs and the start button are disabled, and the full-sync button becomes `取消全量同步`.
-- Cancel full sync is cooperative: it sets a cancel flag, disables the cancel button as `取消中...`, waits for the current VM operation to finish, then runs cleanup.
+- Each project has its own full sync button and cancellation state. While a project's full sync is running, that project's config inputs, its disable-project button, and the top start button are disabled, and the project's full-sync button becomes `取消全量同步`.
+- Cancel full sync is cooperative: it sets a cancel flag, disables the cancel button as `取消中...`, waits for the current virtual machine operation to finish, then runs cleanup.
 - Saves current config before checking.
 - Requires the enhanced preflight to pass.
 - Shows progress in the log/progress UI instead of logging every file.
-- Packages all files under `host_project_path`, not only watched source extensions.
-- Uploads the zip to a VM temp path, extracts into a VM temp directory, then copies extracted files into `vm_project_path`.
-- Matching VM files are overwritten during the final copy step.
-- Extra files that already exist in the VM destination are not deleted.
-- If cancellation/failure leaves a VM temp path that cannot be cleaned, the log must print the path for manual deletion.
+- Packages project files under this project's `host_project_path`, not only watched source extensions, but skips any directory named `Output`.
+- Preserves empty directories in the full-sync zip so project structures that depend on empty folders are not lost.
+- Uploads the zip to a virtual machine temp path, extracts into a virtual machine temp directory, then copies extracted files into this project's `vm_project_path`.
+- Matching virtual machine files are overwritten during the final copy step.
+- Extra files that already exist in the virtual machine destination are not deleted.
+- If cancellation/failure leaves a virtual machine temp path that cannot be cleaned, the log must print the path for manual deletion.
 - No slow compatibility fallback is enabled.
 
 ## Incremental Sync Behavior
 
 - Start first saves the current UI config, logs the `config.json` save path, and starts only after preflight and `.bin` target validation pass.
-- Watches `host_project_path` recursively.
+- Watches this project's `host_project_path` recursively.
 - Debounces changes by `debounce_ms`.
-- Debounced host changes are enqueued and processed by one incremental copy worker. Do not run many Host-to-VM `vmrun` copies concurrently; VIX can become unstable and show VMware Workstation error dialogs.
-- On start, the app builds a host-side content signature baseline for watched files. A later file event is uploaded only if the on-disk file content hash changes; timestamp-only/editor probe events are ignored so unsaved VS Code edits are not pushed to the VM.
+- Debounced local PC changes are enqueued and processed by this project's one incremental copy worker. Do not run many local-PC-to-virtual-machine `vmrun` copies concurrently; VIX can become unstable and show VMware Workstation error dialogs. Cross-project file copy, create, delete, and overwrite `vmrun` calls are serialized with `VMRUN_CALL_LOCK`. Read-only `.bin` target checks and stdout-based guest `.bin` state reads may bypass that lock so two projects can establish startup baselines in parallel.
+- On start, the app builds a local PC content signature baseline for watched files. A later file event is uploaded only if the on-disk file content hash changes; timestamp-only/editor probe events are ignored so unsaved VS Code edits are not pushed to the virtual machine.
+- Files detected as modified during the startup baseline pass are queued after the watchdog observer starts, reducing the startup window where a just-saved source file could be missed.
 - Copies only files whose suffix is in `watch_extensions`.
-- Copies each changed file to a temp file in the target VM directory first, then moves it over the final path with guest PowerShell. If the final move fails, it attempts to delete the temp file and logs any leftover path.
-- If an incremental `vmrun` upload times out, Host-to-VM incremental uploads are suspended and the pending upload queue is cleared. The service logs one actionable error and waits for the user to pause/start again after checking VM/VMware Tools health.
+- Copies each changed file to a temp file in the target virtual machine directory first, then moves it over the final path with guest PowerShell. If the final move fails, it attempts to delete the temp file and logs any leftover path.
+- If an incremental `vmrun` upload times out, local-PC-to-virtual-machine incremental uploads for that project are suspended and that project's pending upload queue is cleared. The service logs one actionable error, the top state can show `部分异常`, and the other project keeps running.
 - Uses the configured `vmrun_path`; there is no hard-coded business-path entry point.
 - All subprocess calls must include `creationflags=subprocess.CREATE_NO_WINDOW` to prevent flashing CMD windows.
+- All text-mode `subprocess.run` calls that read VMware output should include `errors="replace"` so unexpected guest/VMware bytes cannot raise `UnicodeDecodeError`.
 
 ## `.bin` Return Behavior
 
-- `vm_bin_relative_path` is relative to `vm_project_path`.
-- The UI normalizes path entries to Windows backslashes. If the user pastes a VM `.bin`/Output absolute path under `vm_project_path`, save/start converts it to a relative path and writes the converted value back to the entry and `config.json`.
+- `projects[].vm_bin_relative_path` is relative to that project's `projects[].vm_project_path`.
+- The UI normalizes path entries to Windows backslashes. If the user pastes a virtual machine `.bin`/Output absolute path under `vm_project_path`, save/start converts it to a relative path and writes the converted value back to the entry and `config.json`.
 - If it points to an exact `.bin`, the app uses only that file.
 - If it points to a directory with one `.bin`, the app auto-resolves that one file, logs the selected relative file, fills the config entry with the exact relative `.bin` path, and saves it to `config.json`.
 - If it points to a directory with multiple `.bin` files, save/check and start are blocked and the log asks the user to fill the exact file name.
 - The app must not default to project-specific names such as `RL6492_Project.bin`.
 - The guest file state is `(LastWriteTimeUtc.Ticks, Length, SHA256)`.
-- On the first poll after service start, an existing VM `.bin` becomes the baseline and is ignored until it changes after startup.
+- On the first poll after service start, an existing virtual machine `.bin` becomes the baseline and is ignored until it changes after startup.
 - The baseline log should explain that users should compile after start. The first post-baseline timestamp update with identical content is still returned once, then later identical-content updates are skipped as usual.
-- After a `.bin` is successfully copied back, a short post-copy timestamp drift window suppresses same-hash timestamp-only notifications. This avoids noisy "content unchanged" logs caused by VM filesystem or copy timing immediately after a real return.
-- If guest file state cannot be read while establishing the startup baseline, the app copies the existing VM `.bin` to a host temp file only to calculate a signature; it still does not overwrite `host_output_path`.
-- If the timestamp changes but the content hash is identical, the app logs one skipped overwrite for that file state and shows a host/tray notification.
-- After `stop()` is requested, in-flight `.bin` checks must not emit late skip logs/notifications or copy guest files back to the host.
+- After a `.bin` is successfully copied back, a short post-copy timestamp drift window suppresses same-hash timestamp-only notifications. This avoids noisy "content unchanged" logs caused by virtual machine filesystem or copy timing immediately after a real return.
+- If guest file state cannot be read while establishing the startup baseline, the app copies the existing virtual machine `.bin` to a local temp file only to calculate a signature; it still does not overwrite `host_output_path`.
+- If the timestamp changes but the content hash is identical, the app logs one skipped overwrite for that file state and shows a local PC/tray notification.
+- After a project `stop()` is requested, in-flight `.bin` checks for that project must not emit late skip logs/notifications or copy guest files back to the local PC. Stale run tokens are checked before logging, notifying, and replacing local output.
 - If stdout from guest PowerShell is unreliable, the app uses one guest temp sidecar file from `CreateTempfileInGuest`, copies it back, parses it, and deletes it when sync stops/quits.
 - Guest state sidecar files must not be created in the project `Output` directory.
 
@@ -299,13 +339,14 @@ General preflight is shared by `保存并检测`, start/pause, and full sync. `�
 - `vmrun list` must complete without timeout/error.
 - `vmx_path` must exist.
 - Configured `vmx_path` must match a currently running VMX by normalized absolute path, not just file name.
-- VM guest username and password are required.
-- `host_project_path` must exist and be a directory.
+- Virtual machine guest username and password are required.
+- Each enabled project's `host_project_path` must exist and be a directory.
 - Keil project detection accepts `.uvprojx`, `.uvoptx`, `.uvproj`, `.uvopt`, `.uv2`, and `.opt`.
-- `vm_project_path` must not be a disk root or broad risky system path.
-- `host_output_path` must be a directory if it already exists.
-- `vm_bin_relative_path` is required and must not remain absolute after UI normalization. Absolute paths inside `vm_project_path` are converted before preflight; absolute paths outside `vm_project_path` are rejected.
+- Each enabled project's `vm_project_path` must not be a disk root or broad risky system path.
+- Each enabled project's `host_output_path` must be a directory if it already exists.
+- Each enabled project's `vm_bin_relative_path` is required and must not remain absolute after UI normalization. Absolute paths inside that project's `vm_project_path` are converted before preflight; absolute paths outside `vm_project_path` are rejected.
 - A `.bin` name that does not match the detected primary Keil project name is a warning, not a blocking error.
+- When more than one project is enabled, Local PC project paths and virtual machine project paths must not overlap. This applies to top start and single-project start/check paths so independent transfers cannot point into each other.
 
 ## UI Layout
 
@@ -313,9 +354,12 @@ General preflight is shared by `保存并检测`, start/pause, and full sync. `�
 Title bar: status dot, "VM SYNC", compact `中 / EN` language switch, state text
 Control panel: start/pause, full sync, counters/status
 AutoScrollFrame: auto-hiding page scrollbar
-  - Config panel: paths, credentials, save/check, full sync
-  - Log panel: colored CTkTextbox, internal scrollbar
-Status bar: VM status, vmrun status, poll interval
+  - Named sync profile panel: custom immediate-load selector toolbar with new/save/delete actions and inline name editor
+  - Shared virtual machine config panel: VMX, virtual machine username, virtual machine password
+  - `添加同步项目` / Add Sync Project button when project 2 is disabled
+  - Project 1 pane: project config, per-project start/pause, save/check, full sync/cancel, log
+  - Project 2 pane: same controls and log, shown only when enabled
+Status bar: virtual machine status, vmrun status, poll interval
 ```
 
 UI notes:
@@ -331,8 +375,8 @@ UI notes:
 ## Window and Tray Lifecycle
 
 - Close button hides the window with `withdraw()`; sync keeps running.
-- Tray left-click or `显示窗口` restores the window.
-- Tray menu dynamically shows current start/pause state.
+- Tray left-click/double-click or `显示窗口` restores the window. Tray icon activation must not toggle sync.
+- Tray menu dynamically shows current state, start/pause state, show-window, and quit labels in the current language. Status can show running, partially running, or partially degraded. Start/pause is the bold/default menu item; show-window is not bold.
 - Tray `退出` stops sync, deletes the guest state sidecar if present, removes the tray icon, and quits the process.
 - The tray icon appears on startup and persists until `退出`.
 
@@ -341,6 +385,7 @@ UI notes:
 - Single instance uses socket bind `127.0.0.1:19998`.
 - Do not use `SO_REUSEADDR` for the single-instance socket on Windows.
 - All `subprocess.run` calls must include `creationflags=subprocess.CREATE_NO_WINDOW`.
+- Capture `vmrun` output as bytes and decode it through `vmrun_output.py`; do not add one-off implicit text decoding paths.
 - Font family: `Microsoft YaHei UI` for normal UI and `Microsoft YaHei` for log/monospace-style text.
 - Do not use network sync. The tool is designed around VMware Tools / `vmrun.exe`.
 - Keep UI responsive. Avoid blocking vmrun calls on the Tk main thread.
@@ -353,7 +398,7 @@ Run these after code changes:
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_vmrun_resolver.py
+python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py vmrun_output.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_ui_multi_project.py tests/test_ui_profiles.py tests/test_vmrun_resolver.py tests/test_vmrun_output.py
 ```
 
 Run these after documentation or packaging-script changes:
