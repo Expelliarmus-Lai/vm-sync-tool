@@ -4,6 +4,16 @@ Language: [中文](USER_GUIDE.md) | [English](USER_GUIDE.en.md)
 
 VM Sync Tool is a Windows desktop utility for synchronizing a Keil firmware project between your local PC and a VMware Workstation virtual machine. It operates virtual machine files through VMware `vmrun.exe` and VMware Tools, so it does not require network sharing or a virtual machine network adapter.
 
+Applies to version: `v1.3.0`
+
+## v1.3.0 Release Highlights
+
+- Adds named sync profiles that can be created, switched, saved, renamed, and deleted in the main window.
+- Adds atomic configuration replacement, backup retention, and damaged-file recovery.
+- Limits the profile dropdown to eight visible records with scrolling, and closes it on outside clicks, focus loss, minimization, or tray hiding.
+- Fixes the new-profile confirmation action, high-DPI sizing, option clipping, border overlap, and rounded-corner rendering.
+- Improves decoding of Chinese virtual machine paths and PowerShell error output.
+
 ## Requirements
 
 Before using the tool, make sure the local PC and virtual machine are ready:
@@ -33,7 +43,9 @@ VM Sync/
 
 Double-click `VM Sync.exe` to start the application. Regular users do not need to install Python or run any bat/cmd/vbs script.
 
-On first run, the application creates `config.json` in the same directory as `VM Sync.exe`. This file stores local paths, virtual machine paths, the virtual machine username, and the virtual machine password. Do not share it publicly.
+On first run, the application creates `config.json` in the same directory as `VM Sync.exe`. This file stores named sync profiles, local paths, virtual machine paths, the virtual machine username, and the virtual machine password. Do not share it publicly.
+
+Saves use atomic replacement and retain the previous valid configuration as `config.json.bak`. If the main file is damaged, it is preserved as `config.json.corrupt` and the backup is restored when possible. A failed save is shown in the Sync Profiles card. The main, backup, and corrupt files can all contain the password in plaintext, so do not share any of them.
 
 `config.example.json` is a public template that shows the config file format. The application actually reads from and writes to `config.json`.
 
@@ -41,11 +53,25 @@ A compact `中 / EN` language switch is available in the upper-right of the wind
 
 ## Single-Project and Dual-Project Modes
 
-By default, only Project 1 is shown, and the window keeps the same width as the older single-project UI. The default window size is `700x955`, which normally shows the whole single-project layout without page scrolling. To watch a second codebase at the same time, click "Add Sync Project"; the window expands to the right with Project 2's configuration and log pane and switches to the `1180x955` dual-project layout. Clicking "Disable Project 2" pauses Project 2 and returns the window to the single-project layout.
+By default, only Project 1 is shown, and the window keeps the same width as the older single-project UI. The default window size is `700x955`; named profiles, shared virtual machine settings, and project areas are placed on the scrolling page. To watch a second codebase at the same time, click "Add Sync Project"; the window expands to the right with Project 2's configuration and log pane and switches to the `1180x955` dual-project layout. Clicking "Disable Project 2" pauses Project 2 and returns the window to the single-project layout.
 
 Project 1 and Project 2 share the same VMX, virtual machine username, and virtual machine password. Each project has its own Local PC project path, virtual machine project path, `.bin` relative path, firmware return directory, Start/Pause controls, Save and Check, Full Sync/Cancel, and log pane. Legacy single-project configs are automatically filled into Project 1, and Project 2 starts disabled.
 
 The top Start/Pause controls apply to all enabled projects. When you click the top Start button, startup is atomic: if any enabled project fails preflight, all projects remain stopped. A project that passed preflight will log that it did not start because another project needs to be fixed first. Clicking Start or Pause inside a project pane affects only that project.
+
+## Named Sync Profiles
+
+The Sync Profiles card at the top of the scrolling configuration area manages multiple project configurations. Switching, saving, renaming, and deleting stay in the main window; only New opens a compact dialog. Each profile contains the VMX, virtual machine username and password, and the enabled state and paths for Project 1 and Project 2.
+
+- Open Current profile and select a record to switch immediately; there is no separate Load action. If the current fields have unsaved changes, the card offers Save and Load, Discard and Load, or Cancel.
+- The current profile name is shown directly in the selector without a duplicate name field. To rename a saved profile, open the list and click its edit button; the list closes and the Current Profile segment switches in place to a name entry with Save and Cancel actions.
+- Click New in the selector toolbar to open a compact dialog, enter a name, and choose Copy Current or Blank Profile. After creation, continue editing paths in the existing fields in the main window.
+- New, Save, and Delete share the same toolbar as the profile selector. Save stores all current configuration fields; the dropdown's edit action starts renaming in the main toolbar; Delete starts the inline confirmation.
+- Delete Profile requires a second inline confirmation, and the application always keeps at least one profile.
+- Profile management is disabled while sync, startup checks, or full sync are active. Pause or cancel the current operation before loading or deleting a profile.
+- Legacy `config.json` files are migrated into a default profile. On normal exit, the application asks whether to save remaining edits.
+
+The `vmrun.exe` path, UI language, polling interval, and watched extensions are machine-wide settings and do not change when profiles are switched.
 
 ## Configuration Fields
 
@@ -92,13 +118,14 @@ If you paste a full absolute path that is under the virtual machine project path
 
 1. Start VMware Workstation and open the target virtual machine desktop.
 2. Double-click `VM Sync.exe`.
-3. Fill in the configuration fields.
-4. Click "保存并检测" (Save and Check).
-5. When setting up a project for the first time, click "全量同步" (Full Sync) to copy the project files into the virtual machine; `Output` directories are skipped and empty directories are preserved.
-6. If you need a second codebase, click "Add Sync Project", fill in Project 2's paths, and run Save and Check for Project 2.
-7. Click the top Start button to start all enabled projects, or click Start inside one project pane to start only that project. The application first saves the configuration and runs the same checks as Save and Check. After the checks pass, it begins watching Local PC file changes and virtual machine `.bin` output.
-8. After the corresponding project log records the current `.bin` state, build that project manually with Keil inside the virtual machine.
-9. After the `.bin` content changes, the application automatically copies it back to that project's firmware return directory.
+3. Use the default record in Sync Profiles or create a named profile.
+4. Fill in the shared virtual machine and project fields, then click Save Profile.
+5. Click "保存并检测" (Save and Check) for the relevant project.
+6. When setting up a project for the first time, click "全量同步" (Full Sync) to copy the project files into the virtual machine; `Output` directories are skipped and empty directories are preserved.
+7. If you need a second codebase, click "Add Sync Project", fill in Project 2's paths, and run Save and Check for Project 2.
+8. Click the top Start button to start all enabled projects, or click Start inside one project pane to start only that project. The application first saves the configuration and runs the same checks as Save and Check. After the checks pass, it begins watching Local PC file changes and virtual machine `.bin` output.
+9. After the corresponding project log records the current `.bin` state, build that project manually with Keil inside the virtual machine.
+10. After the `.bin` content changes, the application automatically copies it back to that project's firmware return directory.
 
 ## Full Sync vs Start Sync
 

@@ -360,17 +360,37 @@ class SyncManagerTests(unittest.TestCase):
         self.assertFalse(t2.is_alive())
         self.assertEqual(1, max_active)
 
-    def test_vmrun_output_decoding_replaces_invalid_bytes(self):
+    def test_vmrun_output_prefers_utf8_for_guest_chinese_errors(self):
         manager, cm = self._manager()
         cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
         cm.config.vm_guest_user = "h"
         cm.config.vm_guest_password = "password"
 
-        with patch("syncer.subprocess.run", return_value=Completed()) as run:
-            manager._run_vmrun(["list"], timeout=5)
+        expected = "该对象不是一个目录"
+        with patch(
+            "syncer.subprocess.run",
+            return_value=Completed(stderr=expected.encode("utf-8"), returncode=1),
+        ) as run:
+            result = manager._run_vmrun(["list"], timeout=5)
 
-        self.assertTrue(run.call_args.kwargs["text"])
-        self.assertEqual("replace", run.call_args.kwargs["errors"])
+        self.assertEqual(expected, result.stderr)
+        self.assertNotIn("text", run.call_args.kwargs)
+        self.assertNotIn("encoding", run.call_args.kwargs)
+
+    def test_vmrun_output_falls_back_to_windows_chinese_codepage(self):
+        manager, cm = self._manager()
+        cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+        cm.config.vm_guest_user = "h"
+        cm.config.vm_guest_password = "password"
+
+        expected = "虚拟机未运行"
+        with patch(
+            "syncer.subprocess.run",
+            return_value=Completed(stderr=expected.encode("gb18030"), returncode=1),
+        ):
+            result = manager._run_vmrun(["list"], timeout=5)
+
+        self.assertEqual(expected, result.stderr)
 
     def test_bin_target_read_only_guest_checks_can_run_in_parallel(self):
         manager1, cm = self._manager()

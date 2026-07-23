@@ -20,6 +20,7 @@ from watchdog.events import FileSystemEventHandler
 
 from i18n import Translator
 from preflight import PreflightChecker
+from vmrun_output import decode_vmrun_result
 
 # Prevent CMD windows from popping up on Windows subprocess calls
 _CREATE_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -267,6 +268,24 @@ class SyncManager:
         if self._full_sync_active:
             self._emit("warning", LogIcon.CANCEL, self._tr("sync.full.cancel_requested"))
             self._emit_progress(0.95, self._tr("sync.full.cancel_wait"), active=True)
+
+    def reset_profile_state(self):
+        """Clear stopped runtime state after the active configuration profile changes."""
+        if self._running or self._full_sync_active:
+            return False
+        self._stop_requested = False
+        self._incremental_sync_suspended = False
+        self._synced_count = 0
+        self._reset_bin_tracking()
+        self._cached_bin_target_key = None
+        self._cached_bin_target = None
+        self._last_guest_file_state_error = None
+        self._last_bin_missing_log_time = 0.0
+        self._host_file_signatures.clear()
+        self._queued_host_file_signatures.clear()
+        self._startup_window_candidate_paths = []
+        self._drain_copy_queue()
+        return True
 
     def preflight_snapshot(self) -> tuple:
         cfg = self.config.config
@@ -1526,19 +1545,19 @@ class SyncManager:
     def _run_vmrun(self, args: list[str], timeout: int, serialize: bool = True):
         command = self._vmrun_command(args)
         if not serialize:
-            return subprocess.run(
+            result = subprocess.run(
                 command,
-                capture_output=True, text=True, timeout=timeout,
-                errors="replace",
+                capture_output=True, timeout=timeout,
                 creationflags=_CREATE_FLAGS,
             )
-        with VMRUN_CALL_LOCK:
-            return subprocess.run(
-                command,
-                capture_output=True, text=True, timeout=timeout,
-                errors="replace",
-                creationflags=_CREATE_FLAGS,
-            )
+        else:
+            with VMRUN_CALL_LOCK:
+                result = subprocess.run(
+                    command,
+                    capture_output=True, timeout=timeout,
+                    creationflags=_CREATE_FLAGS,
+                )
+        return decode_vmrun_result(result)
 
     def _move_guest_file(self, source: str, destination: str, timeout: int):
         script = (

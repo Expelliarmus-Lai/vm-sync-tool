@@ -8,6 +8,8 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在本机电脑和 VMware Wo
 
 本软件由作者在 Codex 和 Claude Code 辅助下编写、调试和整理文档。
 
+当前发行版本：`v1.3.0`
+
 典型流程：
 
 1. 在本机电脑编辑 Keil 工程源码。
@@ -15,10 +17,20 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在本机电脑和 VMware Wo
 3. 在虚拟机里用 Keil 手动编译。
 4. 将生成的 `.bin` 固件回传到本机电脑。
 
+## v1.3.0 更新内容
+
+- 新增命名同步配置，可在主界面中创建、立即切换、保存、重命名和删除多套 VM/项目配置。
+- 新建配置弹窗提供明确的“创建配置”和“取消”操作，并支持复制当前配置或创建空白配置。
+- 配置文件改为原子保存，保留 `config.json.bak`；主配置损坏时会保留损坏副本并尽量自动恢复。
+- 配置下拉栏支持窗口失焦、最小化和托盘隐藏时自动关闭，最多显示 8 条记录，更多记录可滚动查看。
+- 修复高 DPI 下拉栏宽度、高度、文字裁切、边框侵占及圆角锯齿问题，同时保留灰色悬停反馈。
+- 统一 `vmrun` 输出解码，提升虚拟机中文路径和 PowerShell 错误信息的可读性。
+
 ## 功能特性
 
 - 自动探测并保存 `vmrun.exe` 路径。
 - 校验配置的 `.vmx` 是否为 `vmrun list` 当前正在运行的虚拟机。
+- 支持在主界面内创建、命名、保存、加载、重命名和删除多套同步配置；每套配置包含共享虚拟机信息和两个项目槽位，退出后仍保存在 `config.json`。
 - 支持同一个虚拟机、同一个虚拟机账号下同时监听两个独立 Keil 工程；项目 1 和项目 2 各自保存本机工程路径、虚拟机工程路径、`.bin` 相对路径和固件回传目录。
 - 旧版单项目 `config.json` 会自动迁移到项目 1，新版配置使用 `projects` 列表，后续扩展更多项目时更容易维护。
 - 项目 1 和项目 2 可分别启动、暂停、保存检测、全量同步、取消全量同步和查看日志；顶部按钮仍可启动/暂停全部。
@@ -52,7 +64,7 @@ VM Sync Tool 是一个 Windows 桌面工具，用于在本机电脑和 VMware Wo
 
 ## 使用入口
 
-普通使用者请下载发行包：[VM-Sync-v1.2.1.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.2.1/VM-Sync-v1.2.1.zip)。
+普通使用者请下载发行包：[VM-Sync-v1.3.0.zip](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/download/v1.3.0/VM-Sync-v1.3.0.zip)。
 
 也可以打开 [GitHub Releases](https://github.com/Expelliarmus-Lai/vm-sync-tool/releases/latest) 查看最新版本。发行包结构如下：
 
@@ -122,7 +134,9 @@ python main.py
 
 Windows 本地开发时也可以双击 `dev_start.cmd`。该脚本会从源码启动程序，并在启动失败时保留控制台错误信息。
 
-源码模式的运行配置保存在仓库工作目录的 `config.json`。发行包模式的运行配置保存在 `VM Sync.exe` 同目录下。
+源码模式的运行配置保存在仓库工作目录的 `config.json`。发行包模式的运行配置保存在 `VM Sync.exe` 同目录下。命名同步配置使用稳定 ID 保存在 `profiles` 列表中，`active_profile_id` 指向当前配置；旧版单项目和双项目配置会自动迁移为默认配置。顶层 VM 和 `projects` 字段继续镜像当前配置，以保持兼容性。
+
+保存配置时会使用原子替换，并把上一份有效内容保留为 `config.json.bak`。如果 `config.json` 损坏，软件会先将其保留为 `config.json.corrupt`，再尽量从备份恢复；保存失败时会在配置工具栏显示错误提示。这三个文件都可能明文包含虚拟机密码，请勿分享或提交到 Git。
 
 ## 诊断
 
@@ -145,7 +159,7 @@ python -m unittest discover -v
 编译检查主要模块和高风险测试：
 
 ```powershell
-python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_ui_multi_project.py tests/test_vmrun_resolver.py
+python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py vmrun_output.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_ui_multi_project.py tests/test_ui_profiles.py tests/test_vmrun_resolver.py tests/test_vmrun_output.py
 ```
 
 ## 打包
@@ -166,10 +180,10 @@ powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 
 ```text
 dist\VM Sync\
-dist\VM-Sync-v1.2.1.zip
+dist\VM-Sync-v1.3.0.zip
 ```
 
-发布时应分发 `VM-Sync-v1.2.1.zip`，或分发整个 `VM Sync` 文件夹；不能只分发单独的 `VM Sync.exe`，因为 exe 依赖旁边的 `_internal` 目录。
+发布时应分发 `VM-Sync-v1.3.0.zip`，或分发整个 `VM Sync` 文件夹；不能只分发单独的 `VM Sync.exe`，因为 exe 依赖旁边的 `_internal` 目录。
 
 ## 仓库维护
 

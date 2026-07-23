@@ -4,8 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config_manager import ConfigManager
-from config_manager import Config
+from config_manager import Config, ConfigManager, ConfigPersistenceError
 
 
 class ConfigManagerPathNormalizationTests(unittest.TestCase):
@@ -18,6 +17,9 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
         self.assertEqual(2, len(data["projects"]))
         self.assertTrue(data["projects"][0]["enabled"])
         self.assertFalse(data["projects"][1]["enabled"])
+        self.assertIn("active_profile_id", data)
+        self.assertEqual(1, len(data["profiles"]))
+        self.assertEqual(data["active_profile_id"], data["profiles"][0]["id"])
 
     def test_default_bin_path_is_not_project_specific(self):
         self.assertNotIn("RL6492_Project.bin", Config().vm_bin_relative_path)
@@ -175,6 +177,153 @@ class ConfigManagerPathNormalizationTests(unittest.TestCase):
 
             with patch("builtins.open", side_effect=AssertionError("unexpected rewrite")):
                 cm.save()
+
+    def test_atomic_save_keeps_backup_and_recovers_corrupt_primary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            cm = ConfigManager(str(config_path))
+            cm.config.vmx_path = "D:/VM/one.vmx"
+            cm.save()
+            cm.config.vmx_path = "D:/VM/two.vmx"
+            cm.save()
+
+            backup_path = Path(str(config_path) + ".bak")
+            self.assertTrue(backup_path.exists())
+            self.assertEqual(
+                r"D:\VM\one.vmx",
+                json.loads(backup_path.read_text(encoding="utf-8"))["vmx_path"],
+            )
+
+            config_path.write_text("{broken", encoding="utf-8")
+            recovered = ConfigManager(str(config_path))
+
+            self.assertEqual(r"D:\VM\one.vmx", recovered.config.vmx_path)
+            self.assertTrue(Path(str(config_path) + ".corrupt").exists())
+            self.assertEqual(
+                r"D:\VM\one.vmx",
+                json.loads(config_path.read_text(encoding="utf-8"))["vmx_path"],
+            )
+
+    def test_profile_create_rolls_back_when_atomic_save_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cm = ConfigManager(str(Path(tmp) / "config.json"))
+            cm.save()
+            original_id = cm.config.active_profile_id
+            original_count = len(cm.config.profiles)
+
+            with patch(
+                "config_manager._atomic_write_text",
+                side_effect=ConfigPersistenceError("disk full"),
+            ):
+                with self.assertRaises(ConfigPersistenceError):
+                    cm.create_profile("不能保存", copy_current=False)
+
+            self.assertEqual(original_id, cm.config.active_profile_id)
+            self.assertEqual(original_count, len(cm.config.profiles))
+
+    def test_existing_config_is_migrated_to_named_default_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "language": "zh",
+                        "vmx_path": "D:/VM/dev.vmx",
+                        "vm_guest_user": "builder",
+                        "vm_guest_password": "secret",
+                        "projects": [
+                            {
+                                "enabled": True,
+                                "host_project_path": "C:/src/firmware",
+                                "vm_project_path": "C:/vm/firmware",
+                                "vm_bin_relative_path": "Output/app.bin",
+                                "host_output_path": "C:/out",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            cm = ConfigManager(str(config_path))
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("默认配置", cm.get_active_profile().name)
+        self.assertEqual("builder", cm.get_active_profile().vm_guest_user)
+        self.assertEqual("secret", saved["profiles"][0]["vm_guest_password"])
+        self.assertEqual(saved["active_profile_id"], saved["profiles"][0]["id"])
+        self.assertEqual(saved["vmx_path"], saved["profiles"][0]["vmx_path"])
+        self.assertEqual(saved["projects"], saved["profiles"][0]["projects"])
+
+    def test_profile_crud_supports_chinese_names_and_persists_active_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            cm = ConfigManager(str(config_path))
+            original_id = cm.get_active_profile().id
+            cm.config.vmx_path = "D:/VM/one.vmx"
+            cm.config.projects[0].host_project_path = "C:/src/one"
+
+            created = cm.create_profile("固件甲", copy_current=True)
+            self.assertNotEqual(original_id, created.id)
+            self.assertEqual(r"D:\VM\one.vmx", created.vmx_path)
+            self.assertEqual(r"C:\src\one", created.projects[0].host_project_path)
+
+            cm.config.projects[0].host_project_path = "C:/src/two"
+            cm.save_active_profile("固件乙")
+            reloaded = ConfigManager(str(config_path))
+
+            self.assertEqual("固件乙", reloaded.get_active_profile().name)
+            self.assertEqual(r"C:\src\two", reloaded.config.projects[0].host_project_path)
+            reloaded.activate_profile(original_id)
+            self.assertEqual("", reloaded.config.projects[0].host_project_path)
+
+    def test_profile_name_validation_is_unicode_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cm = ConfigManager(str(Path(tmp) / "config.json"))
+            cm.save_active_profile("Firmware")
+
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                cm.create_profile(" firmware ")
+            with self.assertRaisesRegex(ValueError, "empty"):
+                cm.create_profile("   ")
+
+    def test_rename_profile_by_id_does_not_activate_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            cm = ConfigManager(str(config_path))
+            original = cm.get_active_profile()
+            other = cm.create_profile("待重命名", copy_current=False)
+            cm.activate_profile(original.id)
+
+            renamed = cm.rename_profile(other.id, "离线固件")
+            reloaded = ConfigManager(str(config_path))
+
+            self.assertEqual("离线固件", renamed.name)
+            self.assertEqual(original.id, cm.config.active_profile_id)
+            self.assertEqual(original.id, reloaded.config.active_profile_id)
+            self.assertEqual("离线固件", reloaded.get_profile(other.id).name)
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                cm.rename_profile(other.id, original.name.upper())
+            with self.assertRaisesRegex(ValueError, "empty"):
+                cm.rename_profile(other.id, "   ")
+
+    def test_blank_profile_and_delete_restore_adjacent_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cm = ConfigManager(str(Path(tmp) / "config.json"))
+            original = cm.get_active_profile()
+            cm.config.vmx_path = "D:/VM/dev.vmx"
+            cm.save_active_profile("现有配置")
+
+            blank = cm.create_profile("空白配置", copy_current=False)
+            self.assertEqual("", blank.vmx_path)
+            self.assertTrue(blank.projects[0].enabled)
+            self.assertFalse(blank.projects[1].enabled)
+
+            restored = cm.delete_active_profile()
+            self.assertEqual(original.id, restored.id)
+            self.assertEqual(r"D:\VM\dev.vmx", cm.config.vmx_path)
+            with self.assertRaisesRegex(ValueError, "last_profile"):
+                cm.delete_active_profile()
 
 
 if __name__ == "__main__":

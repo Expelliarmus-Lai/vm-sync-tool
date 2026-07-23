@@ -16,6 +16,8 @@ The intended workflow is:
 - `vmrun.exe` auto-detection is implemented and persisted in `config.json`.
 - VMX preflight verifies that the configured VMX is the virtual machine currently listed by `vmrun list`.
 - Configuration is now shared virtual machine settings plus a `projects` list. VMX, virtual machine username, and virtual machine password are shared; each project owns `enabled`, Local PC project path, virtual machine project path, `.bin` relative path, and firmware return directory.
+- Named synchronization profiles are persisted in `config.json`. Each profile has a stable UUID, Unicode name, shared VMX/guest credentials, and both project slots. Selection loads immediately from a custom profile toolbar; save/delete remain in that toolbar, Rename is launched from the dropdown and edited in place in the main toolbar, and new-profile name/source selection uses a compact modal. Legacy configs migrate into a default profile.
+- Configuration writes use a same-directory temporary file and atomic replacement. The previous valid file is kept as `config.json.bak`; if the main file is damaged, it is preserved as `config.json.corrupt` and the backup is restored when possible. These files can contain plaintext credentials and must remain ignored by git.
 - Legacy single-project configs are migrated into project 1 automatically. When legacy project fields and `projects` coexist, `projects` wins, and saves write the new structure.
 - The UI supports up to two project panes in this release. Project 2 is enabled with `添加同步项目`; disabling project 2 hides its pane and shrinks the window back to the single-project layout.
 - Project 1 and project 2 have independent start/pause, save/check, full sync/cancel, logs, `.bin` hints, watchdog state, upload queues, hash baselines, `.bin` baselines, and return directories.
@@ -39,12 +41,12 @@ The intended workflow is:
 - Stop requests suppress late `.bin` poller logs, skip notifications, and guest-to-local-PC copies after the service has been stopped.
 - Stale run-token checks suppress late incremental moves, `.bin` local PC overwrites, `.bin` logs/notifications, and stale readiness state after a project is paused or restarted.
 - Incremental upload timeout suspends only the affected project's incremental queue and surfaces `部分异常` / `Partially degraded` in the top status when applicable.
-- `vmrun` subprocess text output is decoded with `errors="replace"` so invalid VMware/guest bytes do not crash reader threads.
+- Sync-engine `vmrun` output is captured as bytes and decoded as guest UTF-8 first, then the Windows host code page/GB18030, so Chinese guest errors remain readable without allowing invalid VMware bytes to crash reader threads.
 - The UI currently starts at `700x955`, has minimum size `640x720`, widens to `1180x955` with minimum size `1040x740` when project 2 is enabled, and has no maximum-size cap.
 - The tray menu is bilingual/dynamic: status, show, start/pause, and quit labels update after language switching and can show running, partially running, or partially degraded state. The start/pause menu item is bold/default in the menu, while tray icon activation itself restores the window instead of toggling sync.
 - The source repository has bilingual project documentation: Chinese `README.md` and English `README.en.md`.
 - The release user guide is also bilingual: `docs/USER_GUIDE.md` and `docs/USER_GUIDE.en.md`.
-- `build_release.ps1` builds a folder-based exe release, copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewrites language links for the release package, and creates `dist\VM-Sync-v1.2.1.zip`.
+- `build_release.ps1` builds a folder-based exe release, copies the user guides into `dist\VM Sync\README.md` and `dist\VM Sync\README.en.md`, rewrites language links for the release package, and creates `dist\VM-Sync-v1.3.0.zip`.
 - Local runtime config, release output, build output, caches, and probe logs are intentionally ignored by git.
 - Known open issue: window dragging can still feel less responsive than a normal native window on some machines. Do not pause timers, log updates, or polling while dragging, because that makes the app feel frozen.
 
@@ -79,6 +81,7 @@ vm-sync-tool/
   i18n.py                                        tracked, Chinese/English runtime translations
   preflight.py                                   tracked, path/virtual-machine/bin validation
   vmrun_resolver.py                              tracked, vmrun and running virtual machine detection
+  vmrun_output.py                                tracked, shared byte-output decoding for vmrun/guest PowerShell
   tools/
     vmrun_probe.py                               tracked, local vmrun diagnostic helper
   tests/                                         tracked, unit/regression tests
@@ -95,7 +98,7 @@ vm-sync-tool/
   VM Sync.spec                                   tracked, PyInstaller spec
   build/                                         ignored, PyInstaller intermediate output
   dist/
-    VM-Sync-v1.2.1.zip                          ignored, generated release archive
+    VM-Sync-v1.3.0.zip                          ignored, generated release archive
     VM Sync/                                     ignored, generated folder-based release
       VM Sync.exe                                ignored, generated executable
       _internal/                                 ignored, bundled runtime/dependencies
@@ -126,6 +129,7 @@ Tracked files that belong in the source repository:
 | `i18n.py` | Runtime Chinese/English translations and system-language detection |
 | `preflight.py` | Path, virtual machine, vmrun, running virtual machine, Keil project, and `.bin` configuration checks |
 | `vmrun_resolver.py` | `vmrun.exe` candidate resolution, `vmrun list`, VMX path normalization |
+| `vmrun_output.py` | Shared decoding for byte output returned by VMware and guest PowerShell commands |
 | `tools/vmrun_probe.py` | One-shot diagnostic script for testing `vmrun` connectivity |
 | `tests/` | Unit/regression tests for config, preflight, vmrun resolver, sync logic, and UI behavior |
 | `packaging_hooks/pre_find_module_path/hook-tkinter.py` | PyInstaller pre-find hook for Tcl/Tk packaging compatibility |
@@ -153,14 +157,16 @@ tests/
   test_ui_status_async.py
   test_ui_tray.py
   test_ui_multi_project.py
+  test_ui_profiles.py
   test_vmrun_resolver.py
+  test_vmrun_output.py
 ```
 
 Local/generated files that should remain untracked:
 
 | Path | Purpose |
 |------|---------|
-| `config.json` | Local user configuration persisted by the app; may contain real paths, username, and password. Local AI may inspect it for debugging, but must not commit or expose secrets. |
+| `config.json`, `config.json.bak`, `config.json.corrupt` | Local user configuration, last valid backup, and preserved damaged input. Any of them may contain real paths, username, and password. Local AI may inspect them for debugging, but must not commit or expose secrets. |
 | `dist/` | Release output generated by `build_release.ps1`, including `dist\VM Sync\` and the generated release zip; use it to test the packaged app locally, but regenerate instead of editing contents by hand. |
 | `build/` | PyInstaller intermediate build output; disposable and regenerated by packaging. |
 | `__pycache__/` and `*.pyc` | Python bytecode caches |
@@ -184,6 +190,12 @@ Local/generated files that should remain untracked:
 | `projects[].vm_project_path` | Virtual-machine-side project root for this project. Full sync extracts here and incremental sync writes under this root. |
 | `projects[].vm_bin_relative_path` | `.bin` path relative to this project's `vm_project_path`. May be an exact `.bin` file or a directory to scan. The UI converts absolute paths under `vm_project_path` into relative paths before saving; absolute paths outside `vm_project_path` remain invalid. |
 | `projects[].host_output_path` | Local PC directory where this project's returned `.bin` is written. Created on start if missing. |
+| `active_profile_id` | Stable UUID of the currently loaded named synchronization profile. |
+| `profiles` | Persisted named synchronization profile records. The top-level VM and `projects` fields mirror the active profile for compatibility. |
+| `profiles[].id` | Stable UUID used for loading and renaming without depending on the display name. |
+| `profiles[].name` | User-visible Unicode name; blank and case-insensitive duplicate names are rejected. |
+| `profiles[].vmx_path` / `vm_guest_user` / `vm_guest_password` | Shared virtual machine settings stored for this profile. |
+| `profiles[].projects` | This profile's two project slots using the same project field shape as top-level `projects`. |
 | `language` | Runtime UI/log language. `zh` and `en` are supported; missing, blank, or invalid values are initialized from Windows UI language APIs first, then Python locale fallback. |
 | `debounce_ms` | Local PC file-change debounce, currently `500`. |
 | `poll_interval_sec` | Virtual machine `.bin` poll interval, currently `1`. |
@@ -246,7 +258,7 @@ Keil build in virtual machine
 - Release package layout after `build_release.ps1`:
 
 ```text
-dist\VM-Sync-v1.2.1.zip
+dist\VM-Sync-v1.3.0.zip
 dist\VM Sync\
   VM Sync.exe
   _internal\
@@ -258,7 +270,7 @@ dist\VM Sync\
 
 - `build_release.ps1` copies `docs/USER_GUIDE.md` to release `README.md`, `docs/USER_GUIDE.en.md` to release `README.en.md`, and `LICENSE` to the release folder.
 - The build script rewrites guide language links from `USER_GUIDE*.md` to `README*.md` so links work inside the release package.
-- The build script also regenerates `dist\VM-Sync-v1.2.1.zip` and prints its SHA256.
+- The build script also regenerates `dist\VM-Sync-v1.3.0.zip` and prints its SHA256.
 - Do not commit `dist/`, `build/`, `config.json`, `__pycache__/`, or `vmrun_probe_result.txt`.
 - `config.example.json` stays tracked because it is safe to share and documents the public config shape.
 
@@ -334,6 +346,7 @@ General preflight is shared by `保存并检测`, start/pause, and full sync. `�
 Title bar: status dot, "VM SYNC", compact `中 / EN` language switch, state text
 Control panel: start/pause, full sync, counters/status
 AutoScrollFrame: auto-hiding page scrollbar
+  - Named sync profile panel: custom immediate-load selector toolbar with new/save/delete actions and inline name editor
   - Shared virtual machine config panel: VMX, virtual machine username, virtual machine password
   - `添加同步项目` / Add Sync Project button when project 2 is disabled
   - Project 1 pane: project config, per-project start/pause, save/check, full sync/cancel, log
@@ -364,7 +377,7 @@ UI notes:
 - Single instance uses socket bind `127.0.0.1:19998`.
 - Do not use `SO_REUSEADDR` for the single-instance socket on Windows.
 - All `subprocess.run` calls must include `creationflags=subprocess.CREATE_NO_WINDOW`.
-- Text-mode `subprocess.run` calls that read `vmrun` output must include `errors="replace"`.
+- Capture `vmrun` output as bytes and decode it through `vmrun_output.py`; do not add one-off implicit text decoding paths.
 - Font family: `Microsoft YaHei UI` for normal UI and `Microsoft YaHei` for log/monospace-style text.
 - Do not use network sync. The tool is designed around VMware Tools / `vmrun.exe`.
 - Keep UI responsive. Avoid blocking vmrun calls on the Tk main thread.
@@ -377,7 +390,7 @@ Run these after code changes:
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_ui_multi_project.py tests/test_vmrun_resolver.py
+python -m py_compile main.py config_manager.py i18n.py syncer.py ui.py preflight.py vmrun_resolver.py vmrun_output.py tools/vmrun_probe.py tests/test_config_manager.py tests/test_i18n.py tests/test_main_single_instance.py tests/test_preflight.py tests/test_syncer.py tests/test_ui_bin_hint.py tests/test_ui_full_sync.py tests/test_ui_log.py tests/test_ui_start_async.py tests/test_ui_status_async.py tests/test_ui_tray.py tests/test_ui_multi_project.py tests/test_ui_profiles.py tests/test_vmrun_resolver.py tests/test_vmrun_output.py
 ```
 
 Run these after documentation or packaging-script changes:

@@ -16,7 +16,7 @@ from datetime import datetime
 from PIL import Image, ImageDraw, ImageTk
 import pystray
 
-from config_manager import ConfigManager
+from config_manager import ConfigManager, ConfigPersistenceError
 from i18n import Translator, normalize_language
 from preflight import PreflightChecker, PreflightReport
 from syncer import LogIcon, SyncManager, LogEvent
@@ -45,6 +45,12 @@ SAVE_CHECK_BUTTON_WIDTH = 144
 FULL_SYNC_BUTTON_WIDTH = SAVE_CHECK_BUTTON_WIDTH
 CONFIG_ACTION_BUTTON_HEIGHT = 32
 ACTION_BUTTON_BORDER_SPACING = 8
+PROFILE_DROPDOWN_VISIBLE_ROWS = 8
+PROFILE_POPUP_BORDER_WIDTH = 2
+PROFILE_POPUP_INNER_RADIUS = CARD_CORNER_RADIUS - PROFILE_POPUP_BORDER_WIDTH
+PROFILE_TOOLBAR_INSET = 3
+PROFILE_TOOLBAR_INNER_RADIUS = CONTROL_CORNER_RADIUS - PROFILE_TOOLBAR_INSET
+PROFILE_TOOLBAR_BUTTON_HEIGHT = 30
 
 
 def ui_font(size=13, weight="normal"):
@@ -53,6 +59,92 @@ def ui_font(size=13, weight="normal"):
 
 def mono_font(size=12):
     return ctk.CTkFont(family=MONO_FAMILY, size=size)
+
+
+def _configure_rounded_popup_window(window, fallback_color: str) -> bool:
+    """Request compositor-antialiased rounded corners without color-key fringes."""
+    window.configure(fg_color=fallback_color)
+    if os.name != "nt":
+        return False
+    try:
+        window.update_idletasks()
+        preference = ctypes.c_int(2)  # DWMWCP_ROUND
+        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            ctypes.c_void_p(window.winfo_id()),
+            ctypes.c_uint(33),  # DWMWA_WINDOW_CORNER_PREFERENCE
+            ctypes.byref(preference),
+            ctypes.sizeof(preference),
+        )
+        return result == 0
+    except (AttributeError, OSError, tk.TclError):
+        return False
+
+
+class _WindowsLogFont(ctypes.Structure):
+    _fields_ = [
+        ("lfHeight", ctypes.c_long),
+        ("lfWidth", ctypes.c_long),
+        ("lfEscapement", ctypes.c_long),
+        ("lfOrientation", ctypes.c_long),
+        ("lfWeight", ctypes.c_long),
+        ("lfItalic", ctypes.c_ubyte),
+        ("lfUnderline", ctypes.c_ubyte),
+        ("lfStrikeOut", ctypes.c_ubyte),
+        ("lfCharSet", ctypes.c_ubyte),
+        ("lfOutPrecision", ctypes.c_ubyte),
+        ("lfClipPrecision", ctypes.c_ubyte),
+        ("lfQuality", ctypes.c_ubyte),
+        ("lfPitchAndFamily", ctypes.c_ubyte),
+        ("lfFaceName", ctypes.c_wchar * 32),
+    ]
+
+
+def _match_windows_ime_font(entry):
+    """Match native Windows IME preedit text to a CTkEntry's rendered font."""
+    if os.name != "nt":
+        return
+    native_entry = getattr(entry, "_entry", entry)
+    try:
+        font_spec = native_entry.cget("font")
+        actual_size = int(native_entry.tk.call("font", "actual", font_spec, "-size"))
+        family = str(native_entry.tk.call("font", "actual", font_spec, "-family"))
+        weight = str(native_entry.tk.call("font", "actual", font_spec, "-weight"))
+        if actual_size < 0:
+            pixel_height = abs(actual_size)
+        else:
+            pixel_height = round(
+                actual_size * float(native_entry.winfo_fpixels("1i")) / 72
+            )
+
+        log_font = _WindowsLogFont()
+        log_font.lfHeight = -max(1, pixel_height)
+        log_font.lfWeight = 700 if weight == "bold" else 400
+        log_font.lfCharSet = 1  # DEFAULT_CHARSET
+        log_font.lfQuality = 5  # CLEARTYPE_QUALITY
+        log_font.lfFaceName = family[:31]
+
+        imm32 = ctypes.windll.imm32
+        imm32.ImmGetContext.argtypes = [ctypes.c_void_p]
+        imm32.ImmGetContext.restype = ctypes.c_void_p
+        imm32.ImmSetCompositionFontW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_WindowsLogFont),
+        ]
+        imm32.ImmSetCompositionFontW.restype = ctypes.c_int
+        imm32.ImmReleaseContext.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        imm32.ImmReleaseContext.restype = ctypes.c_int
+
+        hwnds = (native_entry.winfo_id(), entry.winfo_toplevel().winfo_id())
+        for hwnd in dict.fromkeys(hwnds):
+            input_context = imm32.ImmGetContext(hwnd)
+            if not input_context:
+                continue
+            try:
+                imm32.ImmSetCompositionFontW(input_context, ctypes.byref(log_font))
+            finally:
+                imm32.ImmReleaseContext(hwnd, input_context)
+    except (AttributeError, OSError, tk.TclError, TypeError, ValueError):
+        return
 
 
 # ── Color Palette ────────────────────────────────────────────
@@ -192,6 +284,24 @@ def _draw_line_icon(name: str, color: str, canvas: int = ICON_CANVAS) -> Image.I
             radius=s(1.8),
             fill=fill,
         )
+    elif name == "plus":
+        line([(12, 5), (12, 19)])
+        line([(5, 12), (19, 12)])
+    elif name == "trash":
+        rounded((6, 7, 18, 20), radius=2.2)
+        line([(5, 7), (19, 7)])
+        line([(9, 4), (15, 4), (16, 7)])
+        line([(10, 10), (10, 17)], width=max(1, int(1.4 * scale)))
+        line([(14, 10), (14, 17)], width=max(1, int(1.4 * scale)))
+    elif name == "pencil":
+        line([(6, 18), (7.5, 13.5), (15.5, 5.5), (18.5, 8.5), (10.5, 16.5), (6, 18)])
+        line([(14.5, 6.5), (17.5, 9.5)], width=max(1, int(1.4 * scale)))
+    elif name == "layers":
+        line([(4, 8), (12, 4), (20, 8), (12, 12), (4, 8)])
+        line([(5, 12), (12, 16), (19, 12)])
+        line([(5, 16), (12, 20), (19, 16)])
+    elif name == "chevron_down":
+        line([(6.5, 9), (12, 14.5), (17.5, 9)], width=max(1, int(2.2 * scale)))
     else:
         circle(12, 12, 6)
 
@@ -1511,6 +1621,982 @@ _OriginalControlPanel = ControlPanel
 _OriginalConfigPanel = ConfigPanel
 
 
+class NewProfileDialog(ctk.CTkToplevel):
+    def __init__(self, app: "App", on_create, on_close=None):
+        super().__init__(app.window)
+        self.app = app
+        self.on_create = on_create
+        self.on_close = on_close
+        self._closed = False
+        self.title(self._tr("ui.profile.dialog.title"))
+        self.geometry("430x326")
+        self.resizable(False, False)
+        self.configure(fg_color=current_palette()["bg"])
+        self.transient(app.window)
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self._build()
+        self.after(20, self._finish_open)
+
+    def _tr(self, key: str, **kwargs) -> str:
+        return app_tr(self.app, key, **kwargs)
+
+    def _build(self):
+        p = current_palette()
+        self.card = ctk.CTkFrame(
+            self,
+            fg_color=p["card"],
+            border_color=p["border"],
+            border_width=1,
+            corner_radius=CARD_CORNER_RADIUS,
+        )
+        card = self.card
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(6, weight=1)
+
+        ctk.CTkLabel(
+            card,
+            text=self._tr("ui.profile.dialog.heading"),
+            font=ui_font(size=16, weight="bold"),
+            text_color=p["text"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 3))
+        ctk.CTkLabel(
+            card,
+            text=self._tr("ui.profile.dialog.description"),
+            font=ui_font(size=11),
+            text_color=p["text_dim"],
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+
+        ctk.CTkLabel(
+            card,
+            text=self._tr("ui.profile.name"),
+            font=ui_font(size=11),
+            text_color=p["text_dim"],
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 4))
+        self.name_entry = ctk.CTkEntry(
+            card,
+            height=34,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=12),
+            border_color=p["entry_border"],
+            fg_color=p["entry_bg"],
+            placeholder_text=self._tr("ui.profile.name_placeholder"),
+            placeholder_text_color=p["text_dim"],
+        )
+        self.name_entry.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 10))
+
+        ctk.CTkLabel(
+            card,
+            text=self._tr("ui.profile.create_from"),
+            font=ui_font(size=11),
+            text_color=p["text_dim"],
+            anchor="w",
+        ).grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 4))
+        source_row = ctk.CTkFrame(card, fg_color="transparent")
+        source_row.grid(row=5, column=0, sticky="ew", padx=18)
+        source_row.grid_columnconfigure((0, 1), weight=1)
+        self.source_var = tk.StringVar(value="copy")
+        ctk.CTkRadioButton(
+            source_row,
+            text=self._tr("ui.profile.copy_current"),
+            variable=self.source_var,
+            value="copy",
+            font=ui_font(size=11),
+            fg_color=p["accent"],
+            hover_color=p["accent_hover"],
+            text_color=p["text"],
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkRadioButton(
+            source_row,
+            text=self._tr("ui.profile.blank"),
+            variable=self.source_var,
+            value="blank",
+            font=ui_font(size=11),
+            fg_color=p["accent"],
+            hover_color=p["accent_hover"],
+            text_color=p["text"],
+        ).grid(row=0, column=1, sticky="w")
+
+        self.feedback_label = ctk.CTkLabel(
+            card,
+            text=(
+                self._tr("ui.profile.dialog.dirty_note")
+                if app.profile_form_is_dirty()
+                else ""
+            ),
+            font=ui_font(size=10),
+            text_color=p["warning"],
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        )
+        self.feedback_label.grid(row=6, column=0, sticky="new", padx=18, pady=(7, 0))
+
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.grid(row=7, column=0, sticky="sew", padx=18, pady=(12, 16))
+        self.cancel_btn = ctk.CTkButton(
+            actions,
+            text=self._tr("ui.profile.cancel"),
+            width=92,
+            height=32,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=12),
+            fg_color=p["muted_button"],
+            hover_color=p["muted_hover"],
+            text_color=p["text"],
+            command=self._cancel,
+        )
+        self.cancel_btn.pack(side="right")
+        self.create_btn = ctk.CTkButton(
+            actions,
+            text=self._tr("ui.profile.create_save"),
+            image=icon_image(
+                "plus", 15,
+                light_color=LIGHT["button_text"], dark_color=DARK["button_text"],
+            ),
+            compound="left",
+            width=126,
+            height=32,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=12),
+            fg_color=p["accent"],
+            hover_color=p["accent_hover"],
+            text_color=p["button_text"],
+            command=self._create,
+        )
+        self.create_btn.pack(side="right", padx=(0, 8))
+
+        self.bind("<Return>", lambda _event: self._create())
+        self.bind("<Escape>", lambda _event: self._cancel())
+
+    def _finish_open(self):
+        try:
+            self.update_idletasks()
+            required_width = max(430, self.card.winfo_reqwidth() + 32)
+            required_height = max(326, self.card.winfo_reqheight() + 32)
+            self.geometry(f"{required_width}x{required_height}")
+            self.update_idletasks()
+            parent_x = self.app.window.winfo_rootx()
+            parent_y = self.app.window.winfo_rooty()
+            parent_w = self.app.window.winfo_width()
+            parent_h = self.app.window.winfo_height()
+            x = parent_x + max(0, (parent_w - self.winfo_width()) // 2)
+            y = parent_y + max(0, (parent_h - self.winfo_height()) // 2)
+            self.geometry(f"+{x}+{y}")
+            self.grab_set()
+            self.name_entry.focus_set()
+        except tk.TclError:
+            return
+
+    def _create(self):
+        copy_current = self.source_var.get() == "copy"
+        error_message = self.on_create(self.name_entry.get(), copy_current)
+        if error_message:
+            self.feedback_label.configure(
+                text=error_message,
+                text_color=current_palette()["error"],
+            )
+            self.name_entry.focus_set()
+            return
+        self._cancel()
+
+    def _cancel(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+        if self.on_close is not None:
+            self.on_close()
+
+
+class ProfilePanel(ctk.CTkFrame):
+    def __init__(self, master, app: "App"):
+        super().__init__(
+            master,
+            fg_color=current_palette()["card"],
+            border_color=current_palette()["border"],
+            border_width=1,
+            corner_radius=CARD_CORNER_RADIUS,
+        )
+        self.app = app
+        self._enabled = True
+        self._pending_profile_id = ""
+        self._dropdown_window = None
+        self._rename_profile_id = ""
+        self._rename_frame = None
+        self._rename_entry = None
+        self._rename_save_btn = None
+        self._rename_cancel_btn = None
+        self._create_dialog = None
+        self._icon = icon_image(
+            "layers", 19,
+            light_color=LIGHT["accent"], dark_color=DARK["accent"],
+        )
+        self._chevron_icon = icon_image(
+            "chevron_down", 15,
+            light_color=LIGHT["text_dim"], dark_color=DARK["text_dim"],
+        )
+        self._new_icon = icon_image(
+            "plus", 16,
+            light_color=LIGHT["text_dim"], dark_color=DARK["text_dim"],
+        )
+        self._save_icon = icon_image(
+            "save", 16,
+            light_color=LIGHT["text_dim"], dark_color=DARK["text_dim"],
+        )
+        self._delete_icon = icon_image(
+            "trash", 16,
+            light_color=LIGHT["text_dim"], dark_color=DARK["text_dim"],
+        )
+        self._rename_icon = icon_image(
+            "pencil", 14,
+            light_color=LIGHT["text_dim"], dark_color=DARK["text_dim"],
+        )
+        self._build()
+        self.app.window.bind("<FocusOut>", self._on_app_focus_out, add="+")
+        self.app.window.bind("<Unmap>", self._on_app_unmap, add="+")
+        self.app.window.bind_all("<ButtonPress>", self._on_global_pointer_press, add="+")
+        self.refresh_profiles()
+        self.after(400, self._poll_dirty_state)
+
+    def _tr(self, key: str, **kwargs) -> str:
+        return app_tr(self.app, key, **kwargs)
+
+    def _build(self):
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(10, 5))
+        self._header_text_label = pack_section_title(
+            header, self._icon, self._tr("ui.profile.title")
+        )
+        self.state_label = ctk.CTkLabel(
+            header,
+            text="",
+            height=24,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=11),
+            text_color=current_palette()["text_dim"],
+            fg_color=current_palette()["hint_bg"],
+        )
+        self.state_label.pack(side="right")
+
+        self.selector_area = ctk.CTkFrame(self, fg_color="transparent")
+        self.selector_area.pack(fill="x", padx=14, pady=(0, 10))
+        selector_row = ctk.CTkFrame(self.selector_area, fg_color="transparent")
+        selector_row.pack(fill="x", pady=2)
+        self.selector_label = ctk.CTkLabel(
+            selector_row,
+            text=self._tr("ui.profile.current"),
+            width=132,
+            anchor="w",
+            font=ui_font(size=12),
+            text_color=current_palette()["text_dim"],
+        )
+        self.selector_label.pack(side="left", padx=(0, 6))
+        self.selector_shell = ctk.CTkFrame(
+            selector_row,
+            height=36,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            border_color=current_palette()["entry_border"],
+            border_width=2,
+            fg_color=current_palette()["entry_bg"],
+        )
+        self.selector_shell.pack(side="left", fill="x", expand=True)
+        self.selector_shell.pack_propagate(False)
+
+        self.selector_btn = ctk.CTkButton(
+            self.selector_shell,
+            text="",
+            image=self._chevron_icon,
+            compound="left",
+            anchor="w",
+            border_spacing=9,
+            height=PROFILE_TOOLBAR_BUTTON_HEIGHT,
+            corner_radius=PROFILE_TOOLBAR_INNER_RADIUS,
+            font=ui_font(size=12),
+            fg_color="transparent",
+            hover_color=current_palette()["hint_bg"],
+            text_color=current_palette()["text"],
+            command=self._toggle_dropdown,
+        )
+        self.selector_btn.pack(
+            side="left", fill="x", expand=True,
+            padx=(PROFILE_TOOLBAR_INSET, 1), pady=PROFILE_TOOLBAR_INSET,
+        )
+        self.selector_btn.bind("<Configure>", self._sync_dropdown_geometry, add="+")
+
+        self._selector_separators = []
+
+        def add_separator():
+            separator = ctk.CTkFrame(
+                self.selector_shell,
+                width=1,
+                height=20,
+                fg_color=current_palette()["border"],
+            )
+            separator.pack(side="left", padx=1, pady=8)
+            self._selector_separators.append(separator)
+
+        add_separator()
+        self.new_btn = ctk.CTkButton(
+            self.selector_shell,
+            text=self._tr("ui.profile.new_short"),
+            image=self._new_icon,
+            compound="left",
+            width=70,
+            height=PROFILE_TOOLBAR_BUTTON_HEIGHT,
+            corner_radius=PROFILE_TOOLBAR_INNER_RADIUS,
+            font=ui_font(size=11),
+            fg_color="transparent",
+            hover_color=current_palette()["hint_bg"],
+            text_color=current_palette()["text_dim"],
+            command=self._begin_new,
+        )
+        self.new_btn.pack(side="left", pady=PROFILE_TOOLBAR_INSET)
+        add_separator()
+        self.save_btn = ctk.CTkButton(
+            self.selector_shell,
+            text=self._tr("ui.profile.save_short"),
+            image=self._save_icon,
+            compound="left",
+            width=70,
+            height=PROFILE_TOOLBAR_BUTTON_HEIGHT,
+            corner_radius=PROFILE_TOOLBAR_INNER_RADIUS,
+            font=ui_font(size=11),
+            fg_color="transparent",
+            hover_color=current_palette()["hint_bg"],
+            text_color=current_palette()["text_dim"],
+            command=self._save_current,
+        )
+        self.save_btn.pack(side="left", pady=PROFILE_TOOLBAR_INSET)
+        add_separator()
+        self.delete_btn = ctk.CTkButton(
+            self.selector_shell,
+            text=self._tr("ui.profile.delete_short"),
+            image=self._delete_icon,
+            compound="left",
+            width=70,
+            height=PROFILE_TOOLBAR_BUTTON_HEIGHT,
+            corner_radius=PROFILE_TOOLBAR_INNER_RADIUS,
+            font=ui_font(size=11),
+            fg_color="transparent",
+            hover_color=current_palette()["hint_bg"],
+            text_color=current_palette()["text_dim"],
+            command=self._request_delete,
+        )
+        self.delete_btn.pack(
+            side="left", padx=(0, PROFILE_TOOLBAR_INSET),
+            pady=PROFILE_TOOLBAR_INSET,
+        )
+
+        self.prompt_row = ctk.CTkFrame(
+            self,
+            fg_color=current_palette()["hint_bg"],
+            corner_radius=CONTROL_CORNER_RADIUS,
+        )
+        self.prompt_label = ctk.CTkLabel(
+            self.prompt_row,
+            text="",
+            anchor="w",
+            justify="left",
+            font=ui_font(size=11),
+            text_color=current_palette()["text_dim"],
+        )
+        self.prompt_label.pack(side="left", fill="x", expand=True, padx=(10, 6), pady=6)
+        self.prompt_buttons = []
+        for _index in range(3):
+            button = ctk.CTkButton(
+                self.prompt_row,
+                text="",
+                width=92,
+                height=26,
+                corner_radius=CONTROL_CORNER_RADIUS,
+                font=ui_font(size=11),
+                fg_color=current_palette()["muted_button"],
+                hover_color=current_palette()["muted_hover"],
+                text_color=current_palette()["text"],
+            )
+            self.prompt_buttons.append(button)
+
+    def _show_prompt(self, message: str, actions: list[tuple[str, object]]):
+        self.prompt_label.configure(text=message)
+        for button in self.prompt_buttons:
+            button.pack_forget()
+        for button, (text_value, command) in zip(self.prompt_buttons, actions):
+            button.configure(text=text_value, command=command)
+            button.pack(side="right", padx=(0, 6), pady=6)
+        self.prompt_row.pack(fill="x", padx=16, pady=(0, 10))
+
+    def _hide_prompt(self):
+        self._pending_profile_id = ""
+        self.prompt_row.pack_forget()
+
+    def _toggle_dropdown(self):
+        if not self._enabled:
+            return
+        if self._dropdown_window is not None and self._dropdown_window.winfo_exists():
+            self._close_dropdown()
+            return
+        self._open_dropdown()
+
+    def _open_dropdown(self):
+        self._close_dropdown()
+        p = current_palette()
+        window = ctk.CTkToplevel(self)
+        self._dropdown_window = window
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        _configure_rounded_popup_window(window, p["card"])
+        window.transient(self.app.window)
+
+        self._sync_dropdown_geometry()
+
+        body = ctk.CTkFrame(
+            window,
+            fg_color=p["card"],
+            border_color=p["border"],
+            border_width=PROFILE_POPUP_BORDER_WIDTH,
+            corner_radius=CARD_CORNER_RADIUS,
+        )
+        body.pack(fill="both", expand=True)
+        profiles = self.app.cm.config.profiles
+        if len(profiles) > PROFILE_DROPDOWN_VISIBLE_ROWS:
+            row_parent = ctk.CTkScrollableFrame(
+                body,
+                corner_radius=PROFILE_POPUP_INNER_RADIUS,
+                border_width=0,
+                fg_color=p["card"],
+                scrollbar_button_color=p["border"],
+                scrollbar_button_hover_color=p["text_dim"],
+            )
+        else:
+            row_parent = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
+        row_parent.pack(fill="both", expand=True, padx=2, pady=2)
+        active_id = self.app.cm.config.active_profile_id
+        for profile in profiles:
+            active = profile.id == active_id
+            row = ctk.CTkFrame(row_parent, fg_color=p["hint_bg"] if active else "transparent")
+            row.pack(fill="x", padx=3, pady=(3, 0))
+            button = ctk.CTkButton(
+                row,
+                text=(f"●  {profile.name}" if active else f"    {profile.name}"),
+                anchor="w",
+                height=32,
+                corner_radius=CONTROL_CORNER_RADIUS,
+                font=ui_font(size=12, weight="bold" if active else "normal"),
+                fg_color=p["hint_bg"] if active else "transparent",
+                hover_color=p["muted_hover"],
+                text_color=p["accent"] if active else p["text"],
+                command=lambda profile_id=profile.id: self._select_profile(profile_id),
+            )
+            button.pack(side="left", fill="x", expand=True, pady=3)
+            ctk.CTkButton(
+                row,
+                text=self._tr("ui.profile.rename"),
+                image=self._rename_icon,
+                compound="left",
+                width=68,
+                height=30,
+                corner_radius=CONTROL_CORNER_RADIUS,
+                font=ui_font(size=10),
+                fg_color="transparent",
+                hover_color=p["muted_hover"],
+                text_color=p["text_dim"],
+                command=lambda profile_id=profile.id: self._begin_rename(profile_id),
+            ).pack(side="right", padx=(2, 3), pady=3)
+        window.bind("<Escape>", lambda _event: self._close_dropdown())
+        window.bind(
+            "<FocusOut>",
+            lambda _event, expected=window: self.after(
+                80, lambda: self._close_dropdown_if_unfocused(expected)
+            ),
+        )
+        window.focus_force()
+
+    def _sync_dropdown_geometry(self, _event=None):
+        window = self._dropdown_window
+        if window is None or not window.winfo_exists():
+            return
+        selector_width_px = max(1, self.selector_btn.winfo_width())
+        row_height = 41
+        visible_rows = min(
+            len(self.app.cm.config.profiles),
+            PROFILE_DROPDOWN_VISIBLE_ROWS,
+        )
+        geometry_height = max(row_height, row_height * visible_rows + 4)
+        window_scaling = max(0.01, ctk.ScalingTracker.get_window_scaling(window))
+        geometry_width = max(1, round(selector_width_px / window_scaling))
+        x = self.selector_btn.winfo_rootx()
+        y = self.selector_shell.winfo_rooty() + self.selector_shell.winfo_height() + 2
+        window.geometry(f"{geometry_width}x{geometry_height}+{x}+{y}")
+
+    def _show_rename_editor(self, profile):
+        p = current_palette()
+        self.selector_btn.pack_forget()
+        self._rename_frame = ctk.CTkFrame(
+            self.selector_shell,
+            height=32,
+            fg_color="transparent",
+        )
+        self._rename_frame.pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(3, 0),
+            pady=2,
+            before=self._selector_separators[0],
+        )
+        self._rename_entry = ctk.CTkEntry(
+            self._rename_frame,
+            height=30,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=12),
+            border_color=p["accent"],
+            border_width=2,
+            fg_color=p["entry_bg"],
+        )
+        self._rename_entry.pack(side="left", fill="x", expand=True, padx=(1, 5), pady=1)
+        self._rename_entry.insert(0, profile.name)
+        self._rename_entry.select_range(0, "end")
+        self._rename_entry.bind(
+            "<Return>", lambda _event: self._confirm_rename()
+        )
+        self._rename_entry.bind("<Escape>", lambda _event: self._cancel_rename())
+        self._rename_save_btn = ctk.CTkButton(
+            self._rename_frame,
+            text=self._tr("ui.profile.rename_save"),
+            width=48,
+            height=28,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=10),
+            fg_color=p["accent"],
+            hover_color=p["accent_hover"],
+            text_color=p["button_text"],
+            command=self._confirm_rename,
+        )
+        self._rename_save_btn.pack(side="left", padx=(0, 4), pady=2)
+        self._rename_cancel_btn = ctk.CTkButton(
+            self._rename_frame,
+            text=self._tr("ui.profile.cancel"),
+            width=48,
+            height=28,
+            corner_radius=CONTROL_CORNER_RADIUS,
+            font=ui_font(size=10),
+            fg_color=p["muted_button"],
+            hover_color=p["muted_hover"],
+            text_color=p["text"],
+            command=self._cancel_rename,
+        )
+        self._rename_cancel_btn.pack(side="left", padx=(0, 4), pady=2)
+        self.new_btn.configure(state="disabled")
+        self.save_btn.configure(state="disabled")
+        self.delete_btn.configure(state="disabled")
+        self.after(20, lambda: self._focus_rename_entry(0))
+
+    def _close_dropdown_if_unfocused(self, expected_window=None):
+        window = self._dropdown_window
+        if window is None or not window.winfo_exists():
+            return
+        if expected_window is not None and window is not expected_window:
+            return
+        try:
+            focused = window.focus_get()
+        except tk.TclError:
+            focused = None
+        if focused is None or not str(focused).startswith(str(window)):
+            self._close_dropdown()
+
+    @staticmethod
+    def _widget_is_within(widget, ancestor) -> bool:
+        while widget is not None:
+            if widget is ancestor:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _on_global_pointer_press(self, event):
+        window = self._dropdown_window
+        if window is None or not window.winfo_exists():
+            return
+        widget = getattr(event, "widget", None)
+        if self._widget_is_within(widget, window):
+            return
+        if self._widget_is_within(widget, self.selector_shell):
+            return
+        self._close_dropdown()
+
+    def _on_app_focus_out(self, _event=None):
+        window = self._dropdown_window
+        if window is None or not window.winfo_exists():
+            return
+        self.after(80, lambda expected=window: self._close_dropdown_if_app_inactive(expected))
+
+    def _close_dropdown_if_app_inactive(self, expected_window=None):
+        window = self._dropdown_window
+        if window is None or not window.winfo_exists():
+            return
+        if expected_window is not None and window is not expected_window:
+            return
+        try:
+            focused = self.app.window.focus_get()
+        except tk.TclError:
+            focused = None
+        if focused is None:
+            self._close_dropdown()
+
+    def _on_app_unmap(self, _event=None):
+        self._close_dropdown()
+
+    def close_popups(self):
+        self._close_dropdown()
+
+    def _close_dropdown(self):
+        window = self._dropdown_window
+        self._dropdown_window = None
+        if window is not None:
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+
+    def _begin_rename(self, profile_id: str):
+        if not self._enabled:
+            return
+        profile = self.app.cm.get_profile(profile_id)
+        if profile is None:
+            return
+        self._close_dropdown()
+        self._hide_prompt()
+        self._finish_rename_editor()
+        self._rename_profile_id = profile_id
+        self._show_rename_editor(profile)
+
+    def _focus_rename_entry(self, attempt=0):
+        entry = self._rename_entry
+        if entry is None or not entry.winfo_exists():
+            return
+        try:
+            focused = entry.focus_get()
+            if focused is not None and str(focused).startswith(str(entry)):
+                return
+            window = self.app.window
+            window.update_idletasks()
+            window.lift()
+            window.focus_force()
+            entry.focus_force()
+            _match_windows_ime_font(entry)
+        except tk.TclError:
+            return
+        if attempt < 4:
+            self.after(60, lambda: self._focus_rename_entry(attempt + 1))
+
+    def _finish_rename_editor(self):
+        frame = self._rename_frame
+        self._rename_profile_id = ""
+        self._rename_frame = None
+        self._rename_entry = None
+        self._rename_save_btn = None
+        self._rename_cancel_btn = None
+        if frame is not None:
+            try:
+                frame.destroy()
+            except tk.TclError:
+                pass
+        if not self.selector_btn.winfo_manager():
+            self.selector_btn.pack(
+                side="left",
+                fill="x",
+                expand=True,
+                padx=(PROFILE_TOOLBAR_INSET, 1),
+                pady=PROFILE_TOOLBAR_INSET,
+                before=self._selector_separators[0],
+            )
+        self.selector_btn.configure(text=self.app.cm.get_active_profile().name)
+        state = "normal" if self._enabled else "disabled"
+        self.new_btn.configure(state=state)
+        self.save_btn.configure(state=state)
+        delete_enabled = self._enabled and len(self.app.cm.config.profiles) > 1
+        self.delete_btn.configure(state="normal" if delete_enabled else "disabled")
+
+    def _cancel_rename(self):
+        self._finish_rename_editor()
+
+    def _confirm_rename(self) -> bool:
+        entry = self._rename_entry
+        profile_id = self._rename_profile_id
+        if entry is None or not profile_id:
+            return True
+        try:
+            profile = self.app.cm.rename_profile(profile_id, entry.get())
+        except ValueError as error:
+            key = "ui.profile.error.duplicate" if str(error) == "duplicate" else "ui.profile.error.empty"
+            self._set_state(key, "error")
+            entry.focus_set()
+            return False
+        except ConfigPersistenceError as error:
+            self._show_persistence_error(error)
+            entry.focus_set()
+            return False
+        self._finish_rename_editor()
+        self.refresh_profiles()
+        self.app.log_profile_event("ui.profile.log.renamed", name=profile.name)
+        return True
+
+    def _select_profile(self, profile_id: str):
+        self._close_dropdown()
+        if profile_id == self.app.cm.config.active_profile_id:
+            return
+        if self.app.profile_form_is_dirty():
+            self._pending_profile_id = profile_id
+            self._show_prompt(
+                self._tr("ui.profile.unsaved_prompt"),
+                [
+                    (self._tr("ui.profile.save_load"), self._save_then_load),
+                    (self._tr("ui.profile.discard_load"), self._discard_then_load),
+                    (self._tr("ui.profile.cancel"), self._cancel_pending),
+                ],
+            )
+            return
+        self._load_profile(profile_id)
+
+    def refresh_profiles(self):
+        profiles = self.app.cm.config.profiles
+        active = self.app.cm.get_active_profile()
+        self.selector_btn.configure(text=active.name)
+        self.delete_btn.configure(state="normal" if len(profiles) > 1 and self._enabled else "disabled")
+        self._set_state("ui.profile.state.saved", "success")
+
+    def _set_state(self, key: str, tone: str = "muted", **kwargs):
+        p = current_palette()
+        colors = {
+            "success": p["success"],
+            "warning": p["warning"],
+            "error": p["error"],
+            "muted": p["text_dim"],
+        }
+        self.state_label.configure(
+            text=f"  {self._tr(key, **kwargs)}  ",
+            text_color=colors[tone],
+        )
+
+    def _show_persistence_error(self, error: Exception):
+        self._set_state("ui.profile.error.save_failed", "error", error=str(error))
+
+    def _poll_dirty_state(self):
+        try:
+            if self._enabled and not self.prompt_row.winfo_ismapped():
+                if self.app.profile_form_is_dirty():
+                    self._set_state("ui.profile.state.dirty", "warning")
+                else:
+                    self._set_state("ui.profile.state.saved", "success")
+            self.after(400, self._poll_dirty_state)
+        except tk.TclError:
+            return
+
+    def _begin_new(self):
+        if not self._enabled:
+            return
+        self._hide_prompt()
+        self._close_dropdown()
+        if self._create_dialog is not None and self._create_dialog.winfo_exists():
+            self._create_dialog.focus_force()
+            return
+        self._create_dialog = NewProfileDialog(
+            self.app,
+            self._create_profile_from_dialog,
+            self._profile_dialog_closed,
+        )
+
+    def _profile_dialog_closed(self):
+        self._create_dialog = None
+
+    def _create_profile_from_dialog(self, name: str, copy_current: bool):
+        try:
+            if copy_current:
+                self.app.apply_profile_form_to_config()
+            profile = self.app.cm.create_profile(name, copy_current=copy_current)
+        except ValueError as error:
+            key = "ui.profile.error.duplicate" if str(error) == "duplicate" else "ui.profile.error.empty"
+            return self._tr(key)
+        except ConfigPersistenceError as error:
+            return self._tr("ui.profile.error.save_failed", error=str(error))
+        self._create_dialog = None
+        self.refresh_profiles()
+        self.app.after_profile_loaded(profile.name)
+        return None
+
+    def _handle_name_error(self, error: ValueError):
+        key = "ui.profile.error.duplicate" if str(error) == "duplicate" else "ui.profile.error.empty"
+        self._set_state(key, "error")
+
+    def _save_current(self) -> bool:
+        try:
+            self.app.apply_profile_form_to_config()
+            profile = self.app.cm.save_active_profile()
+        except ValueError as error:
+            self._handle_name_error(error)
+            return False
+        except ConfigPersistenceError as error:
+            self._show_persistence_error(error)
+            return False
+        self.refresh_profiles()
+        self._set_state("ui.profile.state.saved", "success")
+        self.app.log_profile_event("ui.profile.log.saved", name=profile.name)
+        return True
+
+    def _save_then_load(self):
+        target_id = self._pending_profile_id
+        if self._save_current():
+            self._hide_prompt()
+            self._load_profile(target_id)
+
+    def _discard_then_load(self):
+        target_id = self._pending_profile_id
+        self._hide_prompt()
+        self._load_profile(target_id)
+
+    def _cancel_pending(self):
+        self.selector_btn.configure(text=self.app.cm.get_active_profile().name)
+        self._hide_prompt()
+
+    def _load_profile(self, profile_id: str):
+        try:
+            profile = self.app.cm.activate_profile(profile_id)
+        except ConfigPersistenceError as error:
+            self._show_persistence_error(error)
+            return False
+        self.refresh_profiles()
+        self.app.after_profile_loaded(profile.name)
+        return True
+
+    def _request_delete(self):
+        if len(self.app.cm.config.profiles) <= 1:
+            self._set_state("ui.profile.error.last", "error")
+            return
+        self._show_prompt(
+            self._tr("ui.profile.delete_prompt", name=self.app.cm.get_active_profile().name),
+            [
+                (self._tr("ui.profile.confirm_delete"), self._confirm_delete),
+                (self._tr("ui.profile.cancel"), self._hide_prompt),
+            ],
+        )
+
+    def _confirm_delete(self):
+        try:
+            profile = self.app.cm.delete_active_profile()
+        except ConfigPersistenceError as error:
+            self._show_persistence_error(error)
+            return
+        self._hide_prompt()
+        self.refresh_profiles()
+        self.app.after_profile_loaded(profile.name)
+
+    def set_enabled(self, enabled: bool):
+        self._enabled = enabled
+        state = "normal" if enabled else "disabled"
+        self.selector_btn.configure(state=state)
+        self.new_btn.configure(state=state)
+        self.save_btn.configure(state=state)
+        delete_enabled = enabled and len(self.app.cm.config.profiles) > 1
+        self.delete_btn.configure(state="normal" if delete_enabled else "disabled")
+        if not enabled:
+            self._finish_rename_editor()
+            self._close_dropdown()
+            self._hide_prompt()
+
+    def confirm_shutdown(self) -> bool:
+        if self._rename_profile_id:
+            decision = messagebox.askyesnocancel(
+                self._tr("ui.profile.exit_title"),
+                self._tr("ui.profile.exit_rename_prompt"),
+                parent=self.app.window,
+            )
+            if decision is None:
+                return False
+            if decision:
+                if not self._confirm_rename():
+                    return False
+            else:
+                self._finish_rename_editor()
+        dirty = self.app.profile_form_is_dirty()
+        if not dirty:
+            return True
+        decision = messagebox.askyesnocancel(
+            self._tr("ui.profile.exit_title"),
+            self._tr("ui.profile.exit_prompt"),
+            parent=self.app.window,
+        )
+        if decision is None:
+            return False
+        if decision:
+            return self._save_current()
+        return True
+
+    def refresh_theme(self):
+        p = current_palette()
+        self.configure(fg_color=p["card"], border_color=p["border"])
+        self._header_text_label.configure(text_color=p["text"])
+        self.state_label.configure(fg_color=p["hint_bg"])
+        self.selector_label.configure(text_color=p["text_dim"])
+        self.selector_shell.configure(
+            border_color=p["entry_border"], fg_color=p["entry_bg"],
+        )
+        self.selector_btn.configure(
+            fg_color="transparent", hover_color=p["hint_bg"], text_color=p["text"],
+        )
+        if self._rename_entry is not None:
+            self._rename_entry.configure(
+                border_color=p["accent"], fg_color=p["entry_bg"],
+            )
+        if self._rename_save_btn is not None:
+            self._rename_save_btn.configure(
+                fg_color=p["accent"], hover_color=p["accent_hover"],
+                text_color=p["button_text"],
+            )
+        if self._rename_cancel_btn is not None:
+            self._rename_cancel_btn.configure(
+                fg_color=p["muted_button"], hover_color=p["muted_hover"],
+                text_color=p["text"],
+            )
+        for separator in self._selector_separators:
+            separator.configure(fg_color=p["border"])
+        self.prompt_row.configure(fg_color=p["hint_bg"])
+        self.prompt_label.configure(text_color=p["text_dim"])
+        self.save_btn.configure(
+            fg_color="transparent", hover_color=p["hint_bg"], text_color=p["text_dim"],
+        )
+        for button in (self.new_btn, self.delete_btn):
+            button.configure(
+                fg_color="transparent", hover_color=p["hint_bg"],
+                text_color=p["text_dim"],
+            )
+        for button in self.prompt_buttons:
+            button.configure(
+                fg_color=p["muted_button"], hover_color=p["muted_hover"],
+                text_color=p["text"],
+            )
+
+    def refresh_language(self):
+        self._header_text_label.configure(text=self._tr("ui.profile.title"))
+        self.selector_label.configure(text=self._tr("ui.profile.current"))
+        self.new_btn.configure(text=self._tr("ui.profile.new_short"))
+        self.save_btn.configure(text=self._tr("ui.profile.save_short"))
+        self.delete_btn.configure(text=self._tr("ui.profile.delete_short"))
+        if self._rename_save_btn is not None:
+            self._rename_save_btn.configure(text=self._tr("ui.profile.rename_save"))
+        if self._rename_cancel_btn is not None:
+            self._rename_cancel_btn.configure(text=self._tr("ui.profile.cancel"))
+
+
 class SharedVmPanel(ctk.CTkFrame):
     _FIELD_SPECS = [
         ("vmx_path", "ui.config.field.vmx", "file", "ui.config.placeholder.vmx"),
@@ -1620,12 +2706,21 @@ class SharedVmPanel(ctk.CTkFrame):
         entry.delete(0, "end")
         entry.insert(0, ntpath.normpath(path.replace("/", "\\")))
 
-    def _save_values_only(self):
+    def collect_values(self) -> dict:
+        values = {}
         for key, entry in self._entries.items():
             value = entry.get().strip()
             if key == "vmx_path":
                 value = ntpath.normpath(value.replace("/", "\\")) if value else ""
+            values[key] = value
+        return values
+
+    def apply_values_to_config(self):
+        for key, value in self.collect_values().items():
             setattr(self.app.cm.config, key, value)
+
+    def _save_values_only(self):
+        self.apply_values_to_config()
 
     def load_values(self):
         for key, entry in self._entries.items():
@@ -1729,23 +2824,32 @@ class MultiConfigPanel(_OriginalConfigPanel):
         if self.project_index == 1 and button is not None:
             button.configure(state="normal" if enabled else "disabled")
 
-    def _save_values_only(self, emit_log: bool = False):
-        shared_vm_panel = getattr(self.app, "shared_vm_panel", None)
-        if shared_vm_panel and hasattr(shared_vm_panel, "_save_values_only"):
-            shared_vm_panel._save_values_only()
+    def collect_values(self) -> dict:
         raw_values = {key: entry.get().strip() for key, entry in self._entries.items()}
         project = self._project_config()
         vm_project_path = self._normalize_entry_value(
             "vm_project_path",
             raw_values.get("vm_project_path", getattr(project, "vm_project_path", "")),
         )
-        for key in self._entries:
-            value = self._normalize_entry_value(
+        return {
+            key: self._normalize_entry_value(
                 key,
                 raw_values.get(key, ""),
                 vm_project_path=vm_project_path,
             )
+            for key in self._entries
+        }
+
+    def apply_values_to_config(self):
+        project = self._project_config()
+        for key, value in self.collect_values().items():
             setattr(project, key, value)
+
+    def _save_values_only(self, emit_log: bool = False):
+        shared_vm_panel = getattr(self.app, "shared_vm_panel", None)
+        if shared_vm_panel and hasattr(shared_vm_panel, "apply_values_to_config"):
+            shared_vm_panel.apply_values_to_config()
+        self.apply_values_to_config()
         self.app.resolve_vmrun_path(save=True)
         self.app.cm.save()
         self._refresh_entry_values_from_config()
@@ -2752,6 +3856,7 @@ class App:
         self._status_indicator_state = "ready"
         self._language_switch_updating = False
         self._latest_bin_return_times: dict[int, float] = {}
+        self._config_revision = 0
 
         self._build_ui()
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -2825,6 +3930,104 @@ class App:
             for index in enabled
         )
 
+    def capture_profile_form_payload(self) -> dict:
+        shared_panel = getattr(self, "shared_vm_panel", None)
+        shared = (
+            shared_panel.collect_values()
+            if shared_panel is not None and hasattr(shared_panel, "collect_values")
+            else {
+                "vmx_path": self.cm.config.vmx_path,
+                "vm_guest_user": self.cm.config.vm_guest_user,
+                "vm_guest_password": self.cm.config.vm_guest_password,
+            }
+        )
+        projects = []
+        for index, project in enumerate(self.cm.config.projects[:2]):
+            panel = getattr(self, "project_panels", {}).get(index)
+            config_panel = getattr(panel, "config_panel", None)
+            values = (
+                config_panel.collect_values()
+                if config_panel is not None and hasattr(config_panel, "collect_values")
+                else {
+                    "host_project_path": project.host_project_path,
+                    "vm_project_path": project.vm_project_path,
+                    "vm_bin_relative_path": project.vm_bin_relative_path,
+                    "host_output_path": project.host_output_path,
+                }
+            )
+            projects.append({"enabled": bool(project.enabled), **values})
+        return {"shared": shared, "projects": projects}
+
+    def apply_profile_form_to_config(self):
+        shared_panel = getattr(self, "shared_vm_panel", None)
+        if shared_panel is not None and hasattr(shared_panel, "apply_values_to_config"):
+            shared_panel.apply_values_to_config()
+        for panel in getattr(self, "project_panels", {}).values():
+            config_panel = getattr(panel, "config_panel", None)
+            if config_panel is not None and hasattr(config_panel, "apply_values_to_config"):
+                config_panel.apply_values_to_config()
+
+    def profile_form_is_dirty(self) -> bool:
+        profile = self.cm.get_active_profile()
+        payload = self.capture_profile_form_payload()
+        stored_payload = {
+            "shared": {
+                "vmx_path": profile.vmx_path,
+                "vm_guest_user": profile.vm_guest_user,
+                "vm_guest_password": profile.vm_guest_password,
+            },
+            "projects": [
+                {
+                    "enabled": bool(project.enabled),
+                    "host_project_path": project.host_project_path,
+                    "vm_project_path": project.vm_project_path,
+                    "vm_bin_relative_path": project.vm_bin_relative_path,
+                    "host_output_path": project.host_output_path,
+                }
+                for project in profile.projects[:2]
+            ],
+        }
+        return payload != stored_payload
+
+    def log_profile_event(self, key: str, **kwargs):
+        event = LogEvent(LogIcon.CONFIG, self.tr(key, **kwargs), "success")
+        indexes = self.get_enabled_project_indexes()
+        for index in indexes:
+            panel = getattr(self, "project_panels", {}).get(index)
+            if panel is not None:
+                panel.log_panel.append(event)
+
+    def after_profile_loaded(self, profile_name: str):
+        self._config_revision += 1
+        shared_panel = getattr(self, "shared_vm_panel", None)
+        if shared_panel is not None:
+            shared_panel.load_values()
+        for index, panel in getattr(self, "project_panels", {}).items():
+            panel.config_panel.load_values()
+            panel.log_panel.clear()
+            sync = self.get_sync_manager(index)
+            resetter = getattr(sync, "reset_profile_state", None)
+            if callable(resetter):
+                resetter()
+            event_queue = getattr(sync, "event_queue", None)
+            if event_queue is not None:
+                while True:
+                    try:
+                        event_queue.get_nowait()
+                    except queue.Empty:
+                        break
+        self._latest_bin_return_times.clear()
+        self._set_project_enabled(0, True, save=False)
+        if len(self.cm.config.projects) > 1:
+            self._set_project_enabled(1, bool(self.cm.config.projects[1].enabled), save=False)
+        self.control.update_stats(0, False)
+        self._vmrun_status_state = "unknown"
+        self._vm_status_state = "checking"
+        self._status_check_running = False
+        self._refresh_status_bar_texts()
+        self.log_profile_event("ui.profile.log.loaded", name=profile_name)
+        self._check_vm_status(schedule_next=False)
+
     def _format_bin_return_status(self, bin_ready: bool) -> str:
         base = self.tr("ui.bin.ready") if bin_ready else self.tr("ui.bin.waiting")
         enabled_indexes = self.get_enabled_project_indexes()
@@ -2862,6 +4065,9 @@ class App:
         return f".bin    {'  |  '.join(parts)}"
 
     def set_all_config_enabled(self, enabled: bool):
+        profile_panel = getattr(self, "profile_panel", None)
+        if profile_panel is not None:
+            profile_panel.set_enabled(enabled)
         shared_vm_panel = getattr(self, "shared_vm_panel", None)
         if shared_vm_panel is not None:
             shared_vm_panel.set_config_enabled(enabled)
@@ -3046,6 +4252,16 @@ class App:
         )
         self.scroll_area.pack(fill="both", expand=True, padx=4, pady=(0, 4))
 
+        self.profile_shell = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
+        self.profile_shell.pack(
+            fill="x",
+            padx=CONTENT_SIDE_PADDING,
+            pady=(4, 4),
+        )
+        self.profile_shell.grid_columnconfigure(0, weight=1)
+        self.profile_panel = ProfilePanel(self.profile_shell, self)
+        self.profile_panel.grid(row=0, column=0, sticky="ew")
+
         self.shared_vm_shell = ctk.CTkFrame(self.scroll_area.inner, fg_color="transparent")
         self.shared_vm_shell.pack(
             fill="x",
@@ -3167,6 +4383,9 @@ class App:
             self._language_switch_updating = False
         self._update_status_indicator(self.any_running())
         self.control.refresh_language()
+        profile_panel = getattr(self, "profile_panel", None)
+        if profile_panel is not None:
+            profile_panel.refresh_language()
         shared_vm_panel = getattr(self, "shared_vm_panel", None)
         if shared_vm_panel is not None:
             shared_vm_panel.refresh_language()
@@ -3236,6 +4455,9 @@ class App:
         )
         self.scroll_area.canvas.configure(bg=p["bg"])
         self.control.refresh_theme()
+        profile_panel = getattr(self, "profile_panel", None)
+        if profile_panel is not None:
+            profile_panel.refresh_theme()
         shared_vm_panel = getattr(self, "shared_vm_panel", None)
         if shared_vm_panel is not None:
             shared_vm_panel.refresh_theme()
@@ -3257,6 +4479,9 @@ class App:
     # ── Window Lifecycle ─────────────────────────────────
 
     def _on_close(self):
+        profile_panel = getattr(self, "profile_panel", None)
+        if profile_panel is not None:
+            profile_panel.close_popups()
         self.window.withdraw()
         self._tray_notified_close = True
         self._tray_notify_start()
@@ -3376,6 +4601,9 @@ class App:
 
     def _shutdown(self):
         if self._shutting_down:
+            return
+        profile_panel = getattr(self, "profile_panel", None)
+        if profile_panel is not None and not profile_panel.confirm_shutdown():
             return
         self._shutting_down = True
         sync_managers = getattr(self, "sync_managers", None) or [self.sync]
@@ -3524,7 +4752,7 @@ class App:
             text=self.tr("ui.status.poll", seconds=self.cm.config.poll_interval_sec)
         )
 
-    def _check_vm_status(self):
+    def _check_vm_status(self, schedule_next: bool = True):
         if self._shutting_down:
             return
         p = current_palette()
@@ -3548,7 +4776,7 @@ class App:
                 self._status_check_running = True
                 threading.Thread(
                     target=self._check_vm_status_worker,
-                    args=(vmrun, self.cm.config.vmx_path),
+                    args=(vmrun, self.cm.config.vmx_path, getattr(self, "_config_revision", 0)),
                     daemon=True,
                 ).start()
 
@@ -3558,17 +4786,33 @@ class App:
         )
 
         # Re-check every 10 seconds
-        self._schedule_after(10000, self._check_vm_status)
+        if schedule_next:
+            self._schedule_after(10000, self._check_vm_status)
 
-    def _check_vm_status_worker(self, vmrun: str, vmx: str):
+    def _check_vm_status_worker(self, vmrun: str, vmx: str, config_revision: int | None = None):
         result = list_running_vms(vmrun)
         self._schedule_after(
             0,
-            lambda: self._apply_vm_status_result(vmrun, vmx, result),
+            lambda: self._apply_vm_status_result(vmrun, vmx, result, config_revision),
         )
 
-    def _apply_vm_status_result(self, vmrun: str, vmx: str, result):
+    def _apply_vm_status_result(
+        self,
+        vmrun: str,
+        vmx: str,
+        result,
+        config_revision: int | None = None,
+    ):
         if self._shutting_down:
+            return
+        if config_revision is not None and config_revision != getattr(self, "_config_revision", 0):
+            return
+        current_vmx = self.cm.config.vmx_path
+        captured_vmx_key = normalize_vmx_path(vmx) if vmx else ""
+        current_vmx_key = normalize_vmx_path(current_vmx) if current_vmx else ""
+        if captured_vmx_key != current_vmx_key:
+            self._status_check_running = False
+            self._check_vm_status(schedule_next=False)
             return
         self._status_check_running = False
         p = current_palette()
