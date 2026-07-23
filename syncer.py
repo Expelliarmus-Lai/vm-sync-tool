@@ -125,6 +125,10 @@ class ProjectFileHandler(FileSystemEventHandler):
         if not event.is_directory and self._should_sync(event.src_path):
             self.sync._on_file_changed(event.src_path)
 
+    def on_moved(self, event):
+        if not event.is_directory and self._should_sync(event.dest_path):
+            self.sync._on_file_changed(event.dest_path)
+
 
 class SyncManager:
     """Manages the lifecycle of one project's sync service."""
@@ -162,6 +166,7 @@ class SyncManager:
         self._guest_state_output_mode: str | None = None
         self._guest_state_sidecar_vmx: str | None = None
         self._guest_state_sidecar_path: str | None = None
+        self._last_guest_file_state_error = None
         self._stop_requested = False
         self._full_sync_cancel = threading.Event()
         self._full_sync_active = False
@@ -234,6 +239,7 @@ class SyncManager:
         self._start_observer(run_token)
         self._start_poller(run_token)
         self._emit("info", LogIcon.START, self._tr("sync.service_started"))
+        self.event_queue.put(("info", "sync_started"))
         self._enqueue_startup_window_changes(run_token)
         return True
 
@@ -789,6 +795,10 @@ class SyncManager:
         if self._stop_requested or not self._is_current_run_token(run_token):
             self._bin_ready = False
             return
+        if guest_state is None and self._last_guest_file_state_error is not None:
+            if self._is_vm_powered_off_result(self._last_guest_file_state_error):
+                self._stop_after_vm_powered_off(self._last_guest_file_state_error)
+                return
         if guest_state is not None:
             if self._startup_bin_baseline_pending:
                 if not self._is_live_run(run_token):
@@ -940,10 +950,17 @@ class SyncManager:
                 self._tr("sync.returned_firmware", filename=bin_filename, path=self._project().host_output_path)
             )
             self._emit("info", LogIcon.FIRMWARE, self._tr("sync.firmware_ready"))
+            returned_at = self._last_bin_copied_at
             # Trigger tray notification
-            self.event_queue.put(("bin_ready", bin_filename))
+            self.event_queue.put((
+                "bin_ready",
+                {"filename": bin_filename, "returned_at": returned_at},
+            ))
         else:
             tmp_path.unlink(missing_ok=True)
+            if self._is_vm_powered_off_result(result):
+                self._stop_after_vm_powered_off(result)
+                return
             err = self._vmrun_error(result)
             self._emit("error", LogIcon.ERROR, self._tr("sync.pull_bin_failed", error=err))
 
@@ -1216,6 +1233,7 @@ class SyncManager:
 
     def _get_guest_file_state(self, vm_path: str, vmx: str) -> tuple[int, int, str] | None:
         """Return (LastWriteTimeUtc ticks, size, sha256) for a guest file."""
+        self._last_guest_file_state_error = None
         if self._guest_state_output_mode != "sidecar":
             ps_command = self._guest_file_state_script(vm_path)
             try:
@@ -1230,6 +1248,7 @@ class SyncManager:
             except Exception:
                 return None
             if result.returncode != 0:
+                self._last_guest_file_state_error = result
                 return None
 
             parsed = self._parse_guest_file_state_output(result.stdout or "")
@@ -1312,7 +1331,9 @@ class SyncManager:
                 timeout=10,
             )
             if writer.returncode != 0:
-                self._clear_guest_state_sidecar(delete=False)
+                self._last_guest_file_state_error = writer
+                if not self._is_vm_powered_off_result(writer):
+                    self._clear_guest_state_sidecar(delete=False)
                 return None
 
             copied = self._run_vmrun(
@@ -1323,7 +1344,9 @@ class SyncManager:
                 timeout=10,
             )
             if copied.returncode != 0:
-                self._clear_guest_state_sidecar(delete=False)
+                self._last_guest_file_state_error = copied
+                if not self._is_vm_powered_off_result(copied):
+                    self._clear_guest_state_sidecar(delete=False)
                 return None
             return self._parse_guest_file_state_output(
                 tmp_path.read_text(encoding="utf-8", errors="replace")
@@ -1370,6 +1393,7 @@ class SyncManager:
         except Exception:
             return None
         if result.returncode != 0:
+            self._last_guest_file_state_error = result
             return None
         return self._parse_guest_tempfile_path(
             "\n".join([result.stdout or "", result.stderr or ""])
@@ -1414,6 +1438,49 @@ class SyncManager:
         if "Guest user:" in err:
             return self._tr("sync.guest_auth_failed")
         return err
+
+    def _is_vm_powered_off_result(self, result) -> bool:
+        text = f"{result.stderr or ''}\n{result.stdout or ''}".casefold()
+        if not text.strip():
+            return False
+        if "tools" in text and "not running" in text:
+            return False
+        powered_off_patterns = (
+            "not powered on",
+            "powered off",
+            "virtual machine is not running",
+            "specified virtual machine is not running",
+            "虚拟机未运行",
+            "虚拟机没有运行",
+            "虚拟机未开机",
+            "虚拟机已关机",
+        )
+        return any(pattern in text for pattern in powered_off_patterns)
+
+    def _stop_after_vm_powered_off(self, result):
+        if self._stop_requested and not self._running:
+            return
+        err = self._vmrun_error(result)
+        self._stop_requested = True
+        self._running = False
+        self._incremental_sync_suspended = False
+        self._startup_watch_window_started_ns = None
+        self._startup_window_candidate_paths = []
+        self._startup_bin_baseline_pending = False
+        self._bin_ready = False
+        self._advance_run_token()
+        if self._debouncer:
+            self._debouncer.cancel_all()
+        self._drain_copy_queue()
+        if self._observer:
+            self._observer.stop()
+            if self._observer is not threading.current_thread():
+                self._observer.join(timeout=2)
+            self._observer = None
+        self._join_copy_worker_for_stop()
+        self._emit("warning", LogIcon.STOP, self._tr("sync.vm_powered_off", error=err))
+        self._emit("info", LogIcon.STOP, self._tr("sync.service_stopped"))
+        self.event_queue.put(("info", "sync_stopped"))
 
     def _ensure_guest_directory(self, vm_path: str, vmx: str | None = None):
         vmx_path = vmx or self.config.config.vmx_path

@@ -483,6 +483,7 @@ class ControlPanel(ctk.CTkFrame):
         self._start_time: float | None = None
         self._last_sync_count: int | None = None
         self._last_bin_ready: bool | None = None
+        self._last_bin_status_text = ""
         self._last_uptime_text = ""
         self._full_sync_active = False
         self._start_preflight_snapshot: tuple | None = None
@@ -664,20 +665,29 @@ class ControlPanel(ctk.CTkFrame):
                 text_color=p["button_text"],
             )
 
-    def update_stats(self, sync_count: int, bin_ready: bool):
+    def update_stats(self, sync_count: int, bin_ready: bool, bin_status_text: str | None = None):
         if sync_count != self._last_sync_count:
             self.sync_label.configure(text=self._tr("ui.control.synced", count=sync_count))
             self._last_sync_count = sync_count
-        if bin_ready != self._last_bin_ready:
+        if bin_status_text is None:
+            formatter = getattr(self.app, "_format_bin_return_status", None)
+            if callable(formatter):
+                bin_status_text = formatter(bin_ready)
+            else:
+                bin_status_text = (
+                    self._tr("ui.bin.ready") if bin_ready else self._tr("ui.bin.waiting")
+                )
+        if bin_ready != self._last_bin_ready or bin_status_text != self._last_bin_status_text:
             if bin_ready:
                 p = current_palette()
-                self.bin_label.configure(text=self._tr("ui.bin.ready"), text_color=p["success"])
+                self.bin_label.configure(text=bin_status_text, text_color=p["success"])
             else:
                 self.bin_label.configure(
-                    text=self._tr("ui.bin.waiting"),
+                    text=bin_status_text,
                     text_color=current_palette()["text_dim"],
                 )
             self._last_bin_ready = bin_ready
+            self._last_bin_status_text = bin_status_text
         if self._start_time:
             elapsed = int(time.time() - self._start_time)
             h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
@@ -691,6 +701,7 @@ class ControlPanel(ctk.CTkFrame):
         self.pause_btn.configure(text=self._tr("ui.button.pause"))
         self._last_sync_count = None
         self._last_bin_ready = None
+        self._last_bin_status_text = ""
         self.update_stats(self.app.sync.synced_count, self.app.sync.bin_ready)
         if not self._start_time:
             text = self._tr("ui.control.uptime.empty")
@@ -2626,6 +2637,7 @@ class MultiControlPanel(_OriginalControlPanel):
         self.pause_btn.configure(text=self._tr("ui.button.pause"))
         self._last_sync_count = None
         self._last_bin_ready = None
+        self._last_bin_status_text = ""
         aggregate_sync_count = getattr(self.app, "aggregate_sync_count", lambda: self.app.sync.synced_count)()
         aggregate_bin_ready = getattr(self.app, "aggregate_bin_ready", lambda: self.app.sync.bin_ready)()
         self.update_stats(aggregate_sync_count, aggregate_bin_ready)
@@ -2739,6 +2751,7 @@ class App:
         self._vm_status_state = "checking"
         self._status_indicator_state = "ready"
         self._language_switch_updating = False
+        self._latest_bin_return_times: dict[int, float] = {}
 
         self._build_ui()
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -2811,6 +2824,42 @@ class App:
             getattr(self.get_sync_manager(index), "bin_ready", False)
             for index in enabled
         )
+
+    def _format_bin_return_status(self, bin_ready: bool) -> str:
+        base = self.tr("ui.bin.ready") if bin_ready else self.tr("ui.bin.waiting")
+        enabled_indexes = self.get_enabled_project_indexes()
+        latest_times = getattr(self, "_latest_bin_return_times", {})
+
+        def format_time(timestamp: float) -> str:
+            returned_at = datetime.fromtimestamp(timestamp)
+            if returned_at.date() == datetime.now().date():
+                return returned_at.strftime("%H:%M:%S")
+            return returned_at.strftime("%m-%d %H:%M:%S")
+
+        if len(enabled_indexes) <= 1:
+            project_index = enabled_indexes[0] if enabled_indexes else 0
+            timestamp = latest_times.get(project_index)
+            if not timestamp:
+                return base
+            return f"{base}    {self.tr('ui.bin.latest', time=format_time(timestamp))}"
+
+        parts = []
+        for project_index in enabled_indexes:
+            project_number = project_index + 1
+            timestamp = latest_times.get(project_index)
+            if timestamp:
+                parts.append(
+                    self.tr(
+                        "ui.bin.project_time",
+                        number=project_number,
+                        time=format_time(timestamp),
+                    )
+                )
+            else:
+                parts.append(
+                    self.tr("ui.bin.project_waiting", number=project_number)
+                )
+        return f".bin    {'  |  '.join(parts)}"
 
     def set_all_config_enabled(self, enabled: bool):
         shared_vm_panel = getattr(self, "shared_vm_panel", None)
@@ -2927,6 +2976,7 @@ class App:
                         sync.stop()
                     except Exception:
                         pass
+                getattr(self, "_latest_bin_return_times", {}).pop(project_index, None)
                 panel.hide()
         if project_index == 1:
             self._show_secondary_project_action(enabled)
@@ -3600,8 +3650,20 @@ class App:
                     self._on_bin_unchanged(data, index)
                 elif event_type == "full_sync_progress" and log_panel is not None:
                     log_panel.update_progress(data)
+                elif event_type == "info" and data == "sync_started":
+                    getattr(self, "_latest_bin_return_times", {}).pop(index, None)
                 elif event_type == "info" and data == "sync_stopped":
-                    pass
+                    if _project_panel is not None:
+                        updater = getattr(_project_panel, "_set_project_running_ui", None)
+                        if callable(updater):
+                            updater(False)
+                    refresher = getattr(_project_panel, "_refresh_app_running_state", None)
+                    if callable(refresher):
+                        refresher()
+                    else:
+                        running = self.any_running()
+                        self._update_status_indicator(running)
+                        self._update_tray_menu()
 
         for index, sync, project_panel, _log_panel in manager_views:
             if project_panel is not None and hasattr(project_panel, "update_stats"):
@@ -3614,7 +3676,20 @@ class App:
 
         self._schedule_after(200, self._poll_events)
 
-    def _on_bin_ready(self, filename: str, project_index: int = 0):
+    def _on_bin_ready(self, data, project_index: int = 0):
+        if isinstance(data, dict):
+            filename = data.get("filename", "")
+            returned_at = data.get("returned_at", data.get("local_mtime"))
+        else:
+            filename = str(data)
+            returned_at = None
+        if returned_at is not None:
+            try:
+                if not hasattr(self, "_latest_bin_return_times"):
+                    self._latest_bin_return_times = {}
+                self._latest_bin_return_times[project_index] = float(returned_at)
+            except (TypeError, ValueError):
+                pass
         if self._tray_icon:
             try:
                 self._tray_icon.notify(

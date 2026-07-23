@@ -65,6 +65,184 @@ class SyncManagerTests(unittest.TestCase):
         cm.config.language = "zh"
         return SyncManager(cm), cm
 
+    def test_moved_file_to_watched_extension_is_enqueued_at_destination(self):
+        manager, _cm = self._manager()
+        handler = syncer.ProjectFileHandler(manager)
+        event = type(
+            "MovedEvent",
+            (),
+            {
+                "is_directory": False,
+                "src_path": r"C:\project\.claude_tmp",
+                "dest_path": r"C:\project\Src\main.c",
+            },
+        )()
+
+        with patch.object(manager, "_on_file_changed") as changed:
+            handler.on_moved(event)
+
+        changed.assert_called_once_with(r"C:\project\Src\main.c")
+
+    def test_bin_ready_event_includes_actual_return_time(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+            manager._running = True
+            manager._run_token = 1
+
+            def fake_run(cmd, **_kwargs):
+                if "CopyFileFromGuestToHost" in cmd:
+                    Path(cmd[-1]).write_bytes(b"firmware-v2")
+                return Completed(returncode=0)
+
+            with patch.object(
+                manager,
+                "_resolve_vm_bin_cached",
+                return_value=(r"C:\project\Output\firmware.bin", "firmware.bin"),
+            ), patch.object(
+                manager,
+                "_get_guest_file_state",
+                return_value=(123, 11, hashlib.sha256(b"firmware-v2").hexdigest()),
+            ), patch("syncer.subprocess.run", side_effect=fake_run), patch(
+                "syncer.time.time", return_value=1753243200.0
+            ):
+                manager._check_bin(run_token=1)
+
+            bin_ready_events = [
+                data
+                for event_type, data in list(manager.event_queue.queue)
+                if event_type == "bin_ready"
+            ]
+
+        self.assertEqual("firmware.bin", bin_ready_events[-1]["filename"])
+        self.assertEqual(1753243200.0, bin_ready_events[-1]["returned_at"])
+        self.assertNotIn("local_mtime", bin_ready_events[-1])
+
+    def test_powered_off_guest_state_error_stops_before_fallback_copy(self):
+        manager, cm = self._manager()
+        cm.config.vmx_path = r"C:\VMs\dev.vmx"
+        cm.config.vm_project_path = r"C:\project"
+        cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+        manager._running = True
+        manager._run_token = 1
+        powered_off = Completed(
+            stderr="Error: The virtual machine is not powered on",
+            returncode=1,
+        )
+
+        def fail_state_read(_vm_path, _vmx):
+            manager._last_guest_file_state_error = powered_off
+            return None
+
+        with patch.object(
+            manager,
+            "_resolve_vm_bin_cached",
+            return_value=(r"C:\project\Output\firmware.bin", "firmware.bin"),
+        ), patch.object(
+            manager, "_get_guest_file_state", side_effect=fail_state_read
+        ), patch.object(manager, "_read_guest_bin_signature") as fallback_copy:
+            manager._check_bin(run_token=1)
+
+        self.assertFalse(manager.running)
+        fallback_copy.assert_not_called()
+
+    def test_powered_off_sidecar_failure_keeps_path_for_reuse(self):
+        manager, _cm = self._manager()
+        vmx = r"C:\VMs\dev.vmx"
+        sidecar = r"C:\Users\builder\AppData\Local\Temp\vmware1.tmp"
+        manager._guest_state_sidecar_vmx = vmx
+        manager._guest_state_sidecar_path = sidecar
+
+        with patch.object(
+            manager,
+            "_run_vmrun",
+            return_value=Completed(
+                stderr="Error: The virtual machine is not powered on",
+                returncode=1,
+            ),
+        ):
+            state = manager._get_guest_file_state_via_sidecar(
+                r"C:\project\Output\firmware.bin",
+                vmx,
+            )
+
+        self.assertIsNone(state)
+        self.assertEqual(vmx, manager._guest_state_sidecar_vmx)
+        self.assertEqual(sidecar, manager._guest_state_sidecar_path)
+
+    def test_tools_not_running_is_not_classified_as_powered_off(self):
+        manager, _cm = self._manager()
+        result = Completed(
+            stderr="Error: The VMware Tools are not running in the virtual machine",
+            returncode=1,
+        )
+
+        self.assertFalse(manager._is_vm_powered_off_result(result))
+
+    def test_powered_off_auto_stop_waits_for_copy_worker(self):
+        manager, _cm = self._manager()
+        manager._running = True
+
+        with patch.object(manager, "_join_copy_worker_for_stop") as join_worker:
+            manager._stop_after_vm_powered_off(
+                Completed(stderr="virtual machine is not running", returncode=1)
+            )
+
+        join_worker.assert_called_once_with()
+
+    def test_powered_off_vm_stops_project_and_logs_once(self):
+        manager, cm = self._manager()
+        with tempfile.TemporaryDirectory() as out:
+            cm.config.vmrun_path = r"C:\VMware\vmrun.exe"
+            cm.config.vmx_path = r"C:\VMs\dev.vmx"
+            cm.config.vm_guest_user = "h"
+            cm.config.vm_guest_password = "password"
+            cm.config.vm_project_path = r"C:\project"
+            cm.config.vm_bin_relative_path = r"Output\firmware.bin"
+            cm.config.host_output_path = out
+            manager._running = True
+            manager._run_token = 1
+
+            with patch.object(
+                manager,
+                "_resolve_vm_bin_cached",
+                return_value=(r"C:\project\Output\firmware.bin", "firmware.bin"),
+            ), patch.object(
+                manager,
+                "_get_guest_file_state",
+                return_value=None,
+            ), patch(
+                "syncer.subprocess.run",
+                return_value=Completed(
+                    stderr="Error: The virtual machine is not powered on",
+                    returncode=1,
+                ),
+            ):
+                manager._check_bin(run_token=1)
+                manager._check_bin(run_token=1)
+
+        logs = [
+            data.message
+            for event_type, data in list(manager.event_queue.queue)
+            if event_type == "log"
+        ]
+        stopped_events = [
+            data
+            for event_type, data in list(manager.event_queue.queue)
+            if event_type == "info"
+        ]
+
+        self.assertFalse(manager.running)
+        self.assertEqual(1, sum("虚拟机已关闭" in message for message in logs))
+        self.assertFalse(any("拉取 .bin 失败" in message for message in logs))
+        self.assertIn("sync_stopped", stopped_events)
+
     def test_guest_mtime_dead_code_is_removed(self):
         self.assertFalse(hasattr(SyncManager, "_get_guest_mtime"))
 

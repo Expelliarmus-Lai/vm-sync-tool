@@ -214,6 +214,7 @@ class MultiProjectUiTests(unittest.TestCase):
             1: FakeProjectPanel(),
         }
         app.sync_managers = [FakeSync(0), FakeSync(1)]
+        app._latest_bin_return_times = {1: 1753243200.0}
 
         App._set_project_enabled(app, 1, True)
         self.assertTrue(app.cm.config.projects[1].enabled)
@@ -223,6 +224,7 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertFalse(app.cm.config.projects[1].enabled)
         self.assertEqual(1, app.project_panels[1].hide_calls)
         self.assertFalse(app.project_panels[1].visible)
+        self.assertNotIn(1, app._latest_bin_return_times)
 
     def test_project_2_action_row_swaps_add_and_disable_buttons(self):
         app = object.__new__(App)
@@ -311,6 +313,65 @@ class MultiProjectUiTests(unittest.TestCase):
         self.assertEqual([(1, "same-name.bin")], bin_unchanged_events)
         self.assertIn((3, True), app.project_panels[0].stats_updates)
         self.assertIn((7, False), app.project_panels[1].stats_updates)
+
+    def test_poll_events_refreshes_project_controls_after_auto_stop(self):
+        app = object.__new__(App)
+        app._shutting_down = False
+        app._maybe_check_appearance_change = lambda: None
+        app._schedule_after = lambda *_args, **_kwargs: None
+        app._on_bin_ready = lambda *_args, **_kwargs: None
+        app._on_bin_unchanged = lambda *_args, **_kwargs: None
+        app.sync_managers = [
+            FakeSync(0, running=False, synced_count=3, bin_ready=False),
+            FakeSync(1, running=True, synced_count=7, bin_ready=True),
+        ]
+        app.project_panels = {
+            0: FakeProjectPanel(),
+            1: FakeProjectPanel(),
+        }
+        status_updates = []
+        tray_updates = []
+        app.any_running = lambda: any(sync.running for sync in app.sync_managers)
+        app._update_status_indicator = lambda running: status_updates.append(running)
+        app._update_tray_menu = lambda: tray_updates.append(True)
+        app.control = SimpleNamespace(update_stats=lambda *_args: None)
+        app.aggregate_sync_count = lambda: 10
+        app.aggregate_bin_ready = lambda: False
+
+        app.sync_managers[0].event_queue.put(("info", "sync_stopped"))
+
+        App._poll_events(app)
+
+        self.assertEqual([False], app.project_panels[0].running_ui)
+        self.assertEqual([], app.project_panels[1].running_ui)
+        self.assertEqual([True], status_updates)
+        self.assertEqual([True], tray_updates)
+
+    def test_poll_events_clears_previous_return_time_when_project_starts(self):
+        app = object.__new__(App)
+        app._shutting_down = False
+        app._maybe_check_appearance_change = lambda: None
+        app._schedule_after = lambda *_args, **_kwargs: None
+        app._on_bin_ready = lambda *_args, **_kwargs: None
+        app._on_bin_unchanged = lambda *_args, **_kwargs: None
+        app._latest_bin_return_times = {0: 1753243200.0, 1: 1753243300.0}
+        app.sync_managers = [
+            FakeSync(0, running=True),
+            FakeSync(1, running=True),
+        ]
+        app.project_panels = {
+            0: FakeProjectPanel(),
+            1: FakeProjectPanel(),
+        }
+        app.control = SimpleNamespace(update_stats=lambda *_args: None)
+        app.aggregate_sync_count = lambda: 0
+        app.aggregate_bin_ready = lambda: False
+
+        app.sync_managers[1].event_queue.put(("info", "sync_started"))
+
+        App._poll_events(app)
+
+        self.assertEqual({0: 1753243200.0}, app._latest_bin_return_times)
 
     def test_poll_events_gives_each_project_a_chance_with_small_tick_budget(self):
         app = object.__new__(App)
